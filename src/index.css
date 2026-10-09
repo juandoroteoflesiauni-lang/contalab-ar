@@ -37,14 +37,159 @@
 }
 
 @media print {
-  .no-print {
+  .no-print,
+  .print\:hidden,
+  [class*="print:hidden"],
+  header,
+  aside,
+  button,
+  .print-hidden {
     display: none !important;
   }
-  .print-only {
+
+  .hidden.print\:block,
+  span.hidden.print\:block,
+  div.hidden.print\:block,
+  [class~="print:block"],
+  .print-only,
+  .print-block {
     display: block !important;
   }
-  body {
-    background-color: white !important;
-    color: black !important;
+
+  .print-inline,
+  [class~="print:inline"] {
+    display: inline !important;
+  }
+
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  html, body {
+    background-color: #ffffff !important;
+    color: #000000 !important;
+    font-size: 11pt !important;
+    line-height: 1.4 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    width: 100% !important;
+  }
+
+  main {
+    padding: 0 !important;
+    margin: 0 !important;
+    width: 100% !important;
+    min-height: auto !important;
+  }
+
+  div, section, article {
+    box-shadow: none !important;
+  }
+
+  /* Tabla de alta fidelidad para PDF/Impresión */
+  table {
+    width: 100% !important;
+    border-collapse: collapse !important;
+    border: 2px solid #000000 !important;
+    color: #000000 !important;
+    background: #ffffff !important;
+    margin-top: 8px !important;
+    margin-bottom: 12px !important;
+    page-break-inside: auto;
+  }
+
+  tr {
+    page-break-inside: avoid;
+    page-break-after: auto;
+  }
+
+  thead {
+    display: table-header-group;
+    background-color: #f1f5f9 !important;
+  }
+
+  th {
+    background-color: #e2e8f0 !important;
+    color: #000000 !important;
+    font-weight: 800 !important;
+    border: 1.5px solid #000000 !important;
+    padding: 8px 10px !important;
+    font-size: 10pt !important;
+    text-transform: uppercase !important;
+  }
+
+  td {
+    border: 1px solid #64748b !important;
+    padding: 8px 10px !important;
+    color: #000000 !important;
+    font-size: 10.5pt !important;
+    background: #ffffff !important;
+  }
+
+  td span, td p, td div {
+    color: #000000 !important;
+  }
+
+  tfoot {
+    display: table-footer-group;
+    background-color: #f8fafc !important;
+    font-weight: bold !important;
+  }
+
+  tfoot td {
+    border-top: 2px solid #000000 !important;
+    font-weight: 800 !important;
+    color: #000000 !important;
+  }
+
+  input, textarea, select {
+    background: transparent !important;
+    border: none !important;
+    color: #000000 !important;
+    font-weight: 700 !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+    font-size: 10.5pt !important;
+  }
+
+  /* Ajuste de tarjetas de Cuentas en T para PDF */
+  .grid-cols-1.md\:grid-cols-2.xl\:grid-cols-4,
+  [class*="xl:grid-cols-4"] {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 16px !important;
+  }
+
+  /* Reseteo de colores de texto a negro para máxima nitidez */
+  .text-white,
+  .text-slate-100,
+  .text-slate-200,
+  .text-slate-300,
+  .text-slate-400,
+  .text-slate-500,
+  .text-slate-600,
+  .text-slate-700,
+  .text-slate-800,
+  .text-slate-900,
+  .text-blue-200,
+  .text-blue-300,
+  .text-blue-400,
+  .text-cyan-400,
+  .text-emerald-300,
+  .text-emerald-400,
+  .text-rose-300,
+  .text-rose-400,
+  .text-amber-300,
+  .text-purple-300 {
+    color: #000000 !important;
+  }
+
+  /* Bordes nítidos en tarjetas y separadores */
+  .border-slate-800,
+  .border-slate-700,
+  .border-slate-200,
+  .divide-slate-200 {
+    border-color: #000000 !important;
   }
 }
