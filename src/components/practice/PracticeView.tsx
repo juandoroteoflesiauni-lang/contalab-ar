@@ -15,32 +15,47 @@ import {
   Layers,
   ArrowRight,
   Sparkles,
-  Info
+  Info,
+  Edit2,
+  DollarSign,
+  PlusCircle,
+  HelpCircle,
+  ArrowDownRight
 } from 'lucide-react';
 import { 
-  ManualJournalRow, 
-  ManualLedgerAccount, 
-  ManualLedgerMovement, 
-  CostSheet, 
-  CostSheetRow, 
+  TAccount, 
+  TAccountCategory, 
+  TMovement, 
+  FacultyInventorySheet, 
+  FacultyInventoryRow, 
+  InventoryCostMethod,
+  InventoryMovementType,
+  GenericCostSheet,
+  GenericCostRow,
+  ManualJournalRow,
   PracticeData 
 } from '../../types/practice';
 import { DEFAULT_PRACTICE_DATA } from '../../data/defaultPracticeData';
-import { formatCurrency, round2, generateId, formatDate } from '../../utils/currency';
+import { formatCurrency, formatQuantity, round2, round4, generateId, formatDate } from '../../utils/currency';
+import { recalculateInventorySheet } from '../../utils/inventorySheetCalculator';
 
-const PRACTICE_STORAGE_KEY = 'contalab_practica_contable_v1';
+const PRACTICE_STORAGE_KEY = 'contalab_practica_contable_v2';
 
 export const PracticeView: React.FC = () => {
-  // Pestaña activa dentro de Práctica Contable
-  const [activePracticeTab, setActivePracticeTab] = useState<'journal' | 'ledger' | 'costs'>('journal');
+  // Pestaña principal dentro de Práctica Contable
+  const [activePracticeTab, setActivePracticeTab] = useState<'journal' | 'tAccounts' | 'costs'>('tAccounts');
 
-  // Estado unificado de práctica persistido en localStorage
+  // Sub-pestaña dentro de Planillas de Costos
+  const [costToolTab, setCostToolTab] = useState<'inventory' | 'generic'>('inventory');
+
+  // Estado unificado persistido en localStorage
   const [practiceData, setPracticeData] = useState<PracticeData>(() => {
     try {
+      localStorage.removeItem('contalab_practica_contable_v1'); // Limpiar datos de demostración anteriores
       const saved = localStorage.getItem(PRACTICE_STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (parsed.journalRows && parsed.ledgerAccounts && parsed.costSheets) {
+        if (parsed.tAccounts && parsed.inventorySheets) {
           return parsed;
         }
       }
@@ -50,7 +65,7 @@ export const PracticeView: React.FC = () => {
     return DEFAULT_PRACTICE_DATA;
   });
 
-  // Guardar en localStorage automáticamente ante cambios
+  // Guardado automático en localStorage
   useEffect(() => {
     try {
       localStorage.setItem(PRACTICE_STORAGE_KEY, JSON.stringify(practiceData));
@@ -59,16 +74,391 @@ export const PracticeView: React.FC = () => {
     }
   }, [practiceData]);
 
-  const handleResetDefaults = () => {
-    if (window.confirm('¿Deseas reiniciar los datos de la práctica a los ejercicios iniciales de ejemplo? Se sobrescribirán tus registros manuales actuales.')) {
+  const handleResetClean = () => {
+    if (window.confirm('¿Deseas reiniciar y vaciar todas las herramientas de práctica contable para empezar desde cero?')) {
       setPracticeData(DEFAULT_PRACTICE_DATA);
     }
   };
 
   /* =========================================================================================
-     1. HERRAMIENTA: LIBRO DIARIO MANUAL
+     1. LIBRO MAYOR: CUENTAS EN "T" (4 Secciones Verticales: Activo, Pasivo, PN, Resultados)
      ========================================================================================= */
-  // Totales calculados en tiempo real
+  const categories: { id: TAccountCategory; label: string; color: string; badge: string }[] = [
+    { id: 'ACTIVO', label: 'Activo', color: 'border-blue-500/60 bg-blue-950/20 text-blue-300', badge: 'Saldo Deudor habitual' },
+    { id: 'PASIVO', label: 'Pasivo', color: 'border-amber-500/60 bg-amber-950/20 text-amber-300', badge: 'Saldo Acreedor habitual' },
+    { id: 'PATRIMONIO_NETO', label: 'Patrimonio Neto', color: 'border-purple-500/60 bg-purple-950/20 text-purple-300', badge: 'Saldo Acreedor habitual' },
+    { id: 'RESULTADOS', label: 'Resultados (R+ / R-)', color: 'border-emerald-500/60 bg-emerald-950/20 text-emerald-300', badge: 'Ingresos y Costos' },
+  ];
+
+  const handleAddTAccount = (category: TAccountCategory) => {
+    const name = prompt(`Ingresa el nombre de la nueva cuenta de ${category} (ej. Mercaderías, Proveedores, Ventas):`);
+    if (!name || !name.trim()) return;
+    const code = prompt('Código contable opcional (ej. 1.1.01):', '');
+
+    const newAccount: TAccount = {
+      id: generateId('t_acc'),
+      category,
+      name: name.trim(),
+      code: code?.trim() || undefined,
+      debits: [],
+      credits: []
+    };
+
+    setPracticeData(prev => ({
+      ...prev,
+      tAccounts: [...prev.tAccounts, newAccount]
+    }));
+  };
+
+  const handleDeleteTAccount = (accountId: string) => {
+    if (window.confirm('¿Estás seguro de eliminar esta cuenta en T? Se borrarán sus movimientos asociados.')) {
+      setPracticeData(prev => ({
+        ...prev,
+        tAccounts: prev.tAccounts.filter(a => a.id !== accountId)
+      }));
+    }
+  };
+
+  const handleUpdateTAccountMeta = (accountId: string, newName: string, newCode?: string) => {
+    setPracticeData(prev => ({
+      ...prev,
+      tAccounts: prev.tAccounts.map(a => a.id === accountId ? { ...a, name: newName, code: newCode } : a)
+    }));
+  };
+
+  const handleAddTMovement = (accountId: string, side: 'debit' | 'credit') => {
+    const rawAmount = prompt(`Ingresa el importe a registrar en el ${side === 'debit' ? 'DEBE' : 'HABER'} ($):`);
+    if (rawAmount === null) return;
+    const amount = Number(rawAmount.replace(/,/g, '.'));
+    if (isNaN(amount) || amount <= 0) {
+      alert('Ingresa un importe numérico mayor a cero.');
+      return;
+    }
+    const ref = prompt('Referencia opcional del asiento o comprobante (ej: 1, As. 1, FC A):', '');
+
+    const newMov: TMovement = {
+      id: generateId('t_mov'),
+      amount,
+      ref: ref?.trim() || undefined
+    };
+
+    setPracticeData(prev => ({
+      ...prev,
+      tAccounts: prev.tAccounts.map(acc => {
+        if (acc.id === accountId) {
+          return {
+            ...acc,
+            debits: side === 'debit' ? [...acc.debits, newMov] : acc.debits,
+            credits: side === 'credit' ? [...acc.credits, newMov] : acc.credits
+          };
+        }
+        return acc;
+      })
+    }));
+  };
+
+  const handleDeleteTMovement = (accountId: string, side: 'debit' | 'credit', movementId: string) => {
+    setPracticeData(prev => ({
+      ...prev,
+      tAccounts: prev.tAccounts.map(acc => {
+        if (acc.id === accountId) {
+          return {
+            ...acc,
+            debits: side === 'debit' ? acc.debits.filter(m => m.id !== movementId) : acc.debits,
+            credits: side === 'credit' ? acc.credits.filter(m => m.id !== movementId) : acc.credits
+          };
+        }
+        return acc;
+      })
+    }));
+  };
+
+  const handleEditTMovement = (accountId: string, side: 'debit' | 'credit', movementId: string, currentAmount: number) => {
+    const raw = prompt('Modificar importe ($):', currentAmount.toString());
+    if (raw === null) return;
+    const amount = Number(raw.replace(/,/g, '.'));
+    if (isNaN(amount) || amount <= 0) return;
+
+    setPracticeData(prev => ({
+      ...prev,
+      tAccounts: prev.tAccounts.map(acc => {
+        if (acc.id === accountId) {
+          const updateMov = (m: TMovement) => m.id === movementId ? { ...m, amount } : m;
+          return {
+            ...acc,
+            debits: side === 'debit' ? acc.debits.map(updateMov) : acc.debits,
+            credits: side === 'credit' ? acc.credits.map(updateMov) : acc.credits
+          };
+        }
+        return acc;
+      })
+    }));
+  };
+
+  // Estados para inserción y edición rápida inline en Cuentas en T (sin popups bloqueantes)
+  const [inlineAdding, setInlineAdding] = useState<{ accountId: string; side: 'debit' | 'credit' } | null>(null);
+  const [inlineAmount, setInlineAmount] = useState('');
+  const [inlineRef, setInlineRef] = useState('');
+
+  const [editingMovement, setEditingMovement] = useState<{ accountId: string; side: 'debit' | 'credit'; movId: string; amount: string } | null>(null);
+
+  const handleConfirmInlineMovement = (accountId: string, side: 'debit' | 'credit') => {
+    const cleanStr = inlineAmount.trim().replace(/,/g, '.');
+    const parsed = Number(cleanStr);
+    if (!isNaN(parsed) && parsed > 0) {
+      const newMov: TMovement = {
+        id: generateId('t_mov'),
+        amount: parsed,
+        ref: inlineRef.trim() || undefined
+      };
+      setPracticeData(prev => ({
+        ...prev,
+        tAccounts: prev.tAccounts.map(acc => {
+          if (acc.id === accountId) {
+            return {
+              ...acc,
+              debits: side === 'debit' ? [...acc.debits, newMov] : acc.debits,
+              credits: side === 'credit' ? [...acc.credits, newMov] : acc.credits
+            };
+          }
+          return acc;
+        })
+      }));
+    }
+    setInlineAdding(null);
+    setInlineAmount('');
+    setInlineRef('');
+  };
+
+  const handleConfirmEditMovement = (accountId: string, side: 'debit' | 'credit', movId: string) => {
+    if (!editingMovement) return;
+    const cleanStr = editingMovement.amount.trim().replace(/,/g, '.');
+    const parsed = Number(cleanStr);
+    if (!isNaN(parsed) && parsed > 0) {
+      setPracticeData(prev => ({
+        ...prev,
+        tAccounts: prev.tAccounts.map(acc => {
+          if (acc.id === accountId) {
+            const updateMov = (m: TMovement) => m.id === movId ? { ...m, amount: parsed } : m;
+            return {
+              ...acc,
+              debits: side === 'debit' ? acc.debits.map(updateMov) : acc.debits,
+              credits: side === 'credit' ? acc.credits.map(updateMov) : acc.credits
+            };
+          }
+          return acc;
+        })
+      }));
+    }
+    setEditingMovement(null);
+  };
+
+  /* =========================================================================================
+     2. PLANILLAS DE COSTOS: FORMATO DE CÁTEDRA (Imagen 4)
+     ========================================================================================= */
+  const [activeSheetIndex, setActiveSheetIndex] = useState(0);
+
+  const activeFacultySheet = practiceData.inventorySheets[activeSheetIndex] || practiceData.inventorySheets[0];
+
+  const handleAddFacultySheet = () => {
+    const title = prompt('Título de la nueva planilla de inventario permanente:', `Planilla de Inventario #${practiceData.inventorySheets.length + 1}`);
+    if (!title) return;
+    const productName = prompt('Nombre del producto / bien de cambio:', 'Mercadería A');
+
+    const newSheet: FacultyInventorySheet = {
+      id: generateId('sheet_inv'),
+      title: title.trim(),
+      productName: productName?.trim() || 'Mercadería',
+      unitOfMeasure: 'Unidad',
+      method: 'PEPS',
+      rows: []
+    };
+
+    setPracticeData(prev => ({
+      ...prev,
+      inventorySheets: [...prev.inventorySheets, newSheet]
+    }));
+    setActiveSheetIndex(practiceData.inventorySheets.length);
+  };
+
+  const handleDeleteFacultySheet = (sheetId: string) => {
+    if (practiceData.inventorySheets.length <= 1) {
+      alert('Debes conservar al menos una planilla de inventario permanente.');
+      return;
+    }
+    if (window.confirm('¿Deseas eliminar esta planilla de inventario permanente?')) {
+      const remaining = practiceData.inventorySheets.filter(s => s.id !== sheetId);
+      setPracticeData(prev => ({
+        ...prev,
+        inventorySheets: remaining
+      }));
+      setActiveSheetIndex(0);
+    }
+  };
+
+  const handleChangeSheetMethod = (method: InventoryCostMethod) => {
+    if (!activeFacultySheet) return;
+    const recalculatedRows = recalculateInventorySheet(activeFacultySheet.rows, method);
+
+    setPracticeData(prev => ({
+      ...prev,
+      inventorySheets: prev.inventorySheets.map(s => 
+        s.id === activeFacultySheet.id ? { ...s, method, rows: recalculatedRows } : s
+      )
+    }));
+  };
+
+  const handleAddFacultyRow = (type: InventoryMovementType = 'COMPRA') => {
+    if (!activeFacultySheet) return;
+    const today = new Date().toISOString().slice(0, 10);
+    const conceptDefault = 
+      type === 'INICIAL' ? 'Existencia inicial según recuento' :
+      type === 'COMPRA' ? 'Compra s/Factura A' :
+      type === 'VENTA' ? 'Venta s/Factura B' :
+      type === 'DEV_COMPRA' ? 'Devolución de compra a proveedor' :
+      type === 'DEV_VENTA' ? 'Devolución de venta de cliente' : 'Ajuste de inventario';
+
+    const newRow: FacultyInventoryRow = {
+      id: generateId('inv_row'),
+      date: today,
+      concept: conceptDefault,
+      type,
+      inUnits: type === 'COMPRA' || type === 'INICIAL' ? 100 : 0,
+      inUnitPrice: type === 'COMPRA' || type === 'INICIAL' ? 500 : 0,
+      inTotal: 0,
+      outUnits: type === 'VENTA' ? 50 : 0,
+      outUnitPrice: 0,
+      outTotal: 0,
+      balanceUnits: 0,
+      balanceUnitPrice: 0,
+      balanceTotal: 0
+    };
+
+    const updatedRows = recalculateInventorySheet([...activeFacultySheet.rows, newRow], activeFacultySheet.method);
+
+    setPracticeData(prev => ({
+      ...prev,
+      inventorySheets: prev.inventorySheets.map(s => 
+        s.id === activeFacultySheet.id ? { ...s, rows: updatedRows } : s
+      )
+    }));
+  };
+
+  const handleUpdateFacultyRow = (rowId: string, field: keyof FacultyInventoryRow, value: any) => {
+    if (!activeFacultySheet) return;
+    const updatedRows = activeFacultySheet.rows.map(r => {
+      if (r.id === rowId) {
+        return { ...r, [field]: value };
+      }
+      return r;
+    });
+
+    const recalculated = recalculateInventorySheet(updatedRows, activeFacultySheet.method);
+
+    setPracticeData(prev => ({
+      ...prev,
+      inventorySheets: prev.inventorySheets.map(s => 
+        s.id === activeFacultySheet.id ? { ...s, rows: recalculated } : s
+      )
+    }));
+  };
+
+  const handleDeleteFacultyRow = (rowId: string) => {
+    if (!activeFacultySheet) return;
+    const filtered = activeFacultySheet.rows.filter(r => r.id !== rowId);
+    const recalculated = recalculateInventorySheet(filtered, activeFacultySheet.method);
+
+    setPracticeData(prev => ({
+      ...prev,
+      inventorySheets: prev.inventorySheets.map(s => 
+        s.id === activeFacultySheet.id ? { ...s, rows: recalculated } : s
+      )
+    }));
+  };
+
+  // Métricas del inventario permanente de cátedra
+  const sheetSummary = useMemo(() => {
+    if (!activeFacultySheet || activeFacultySheet.rows.length === 0) {
+      return { endingUnits: 0, endingTotal: 0, totalCMV: 0, totalPurchases: 0 };
+    }
+    const lastRow = activeFacultySheet.rows[activeFacultySheet.rows.length - 1];
+    const endingUnits = lastRow ? lastRow.balanceUnits : 0;
+    const endingTotal = lastRow ? lastRow.balanceTotal : 0;
+    const totalCMV = round2(activeFacultySheet.rows.reduce((sum, r) => sum + (r.outTotal || 0), 0));
+    const totalPurchases = round2(activeFacultySheet.rows.reduce((sum, r) => sum + (r.inTotal || 0), 0));
+
+    return { endingUnits, endingTotal, totalCMV, totalPurchases };
+  }, [activeFacultySheet]);
+
+  /* =========================================================================================
+     3. OTRAS PLANILLAS DE COSTOS (Genéricas / RT 17)
+     ========================================================================================= */
+  const activeGenericSheet = practiceData.genericCostSheets[0];
+
+  const handleAddGenericRow = () => {
+    if (!activeGenericSheet) return;
+    const newRow: GenericCostRow = {
+      id: generateId('gen_row'),
+      concept: 'Concepto de costo',
+      quantity: 1,
+      unitCost: 0,
+      total: 0,
+      notes: ''
+    };
+
+    setPracticeData(prev => ({
+      ...prev,
+      genericCostSheets: prev.genericCostSheets.map(s => 
+        s.id === activeGenericSheet.id ? { ...s, rows: [...s.rows, newRow] } : s
+      )
+    }));
+  };
+
+  const handleUpdateGenericRow = (rowId: string, field: keyof GenericCostRow, value: any) => {
+    if (!activeGenericSheet) return;
+    setPracticeData(prev => ({
+      ...prev,
+      genericCostSheets: prev.genericCostSheets.map(s => {
+        if (s.id === activeGenericSheet.id) {
+          return {
+            ...s,
+            rows: s.rows.map(r => {
+              if (r.id === rowId) {
+                const updated = { ...r, [field]: value };
+                if (field === 'quantity' || field === 'unitCost') {
+                  const qty = field === 'quantity' ? Number(value) || 0 : r.quantity;
+                  const unit = field === 'unitCost' ? Number(value) || 0 : r.unitCost;
+                  updated.total = round2(qty * unit);
+                }
+                return updated;
+              }
+              return r;
+            })
+          };
+        }
+        return s;
+      })
+    }));
+  };
+
+  const handleDeleteGenericRow = (rowId: string) => {
+    if (!activeGenericSheet) return;
+    setPracticeData(prev => ({
+      ...prev,
+      genericCostSheets: prev.genericCostSheets.map(s => 
+        s.id === activeGenericSheet.id ? { ...s, rows: s.rows.filter(r => r.id !== rowId) } : s
+      )
+    }));
+  };
+
+  const genericGrandTotal = useMemo(() => {
+    if (!activeGenericSheet) return 0;
+    return round2(activeGenericSheet.rows.reduce((sum, r) => sum + (r.total || 0), 0));
+  }, [activeGenericSheet]);
+
+  /* =========================================================================================
+     4. LIBRO DIARIO MANUAL
+     ========================================================================================= */
   const journalTotals = useMemo(() => {
     const totalDebit = round2(practiceData.journalRows.reduce((sum, r) => sum + (Number(r.debit) || 0), 0));
     const totalCredit = round2(practiceData.journalRows.reduce((sum, r) => sum + (Number(r.credit) || 0), 0));
@@ -77,17 +467,17 @@ export const PracticeView: React.FC = () => {
     return { totalDebit, totalCredit, difference, isBalanced };
   }, [practiceData.journalRows]);
 
-  const handleAddJournalRow = (entryNum?: number) => {
-    const nextEntryNum = entryNum || (practiceData.journalRows.length > 0 
+  const handleAddJournalRow = () => {
+    const nextEntry = practiceData.journalRows.length > 0 
       ? Math.max(...practiceData.journalRows.map(r => r.entryNumber || 1)) + 1 
-      : 1);
+      : 1;
 
     const newRow: ManualJournalRow = {
       id: generateId('pj_row'),
-      entryNumber: nextEntryNum,
+      entryNumber: nextEntry,
       date: new Date().toISOString().slice(0, 10),
-      accountCode: '1.1.01',
-      accountName: 'Caja',
+      accountCode: '',
+      accountName: '',
       detail: '',
       debit: 0,
       credit: 0
@@ -102,17 +492,9 @@ export const PracticeView: React.FC = () => {
   const handleUpdateJournalRow = (id: string, field: keyof ManualJournalRow, value: any) => {
     setPracticeData(prev => ({
       ...prev,
-      journalRows: prev.journalRows.map(row => {
-        if (row.id === id) {
-          return {
-            ...row,
-            [field]: (field === 'debit' || field === 'credit' || field === 'entryNumber') 
-              ? Number(value) || 0 
-              : value
-          };
-        }
-        return row;
-      })
+      journalRows: prev.journalRows.map(row => 
+        row.id === id ? { ...row, [field]: (field === 'debit' || field === 'credit' || field === 'entryNumber') ? Number(value) || 0 : value } : row
+      )
     }));
   };
 
@@ -120,285 +502,6 @@ export const PracticeView: React.FC = () => {
     setPracticeData(prev => ({
       ...prev,
       journalRows: prev.journalRows.filter(r => r.id !== id)
-    }));
-  };
-
-  /* =========================================================================================
-     2. HERRAMIENTA: LIBRO MAYOR MANUAL
-     ========================================================================================= */
-  const [selectedLedgerAccountId, setSelectedLedgerAccountId] = useState<string>(() => {
-    return practiceData.ledgerAccounts[0]?.id || '';
-  });
-
-  // Cuenta activa de mayor
-  const activeLedgerAccount = useMemo(() => {
-    return practiceData.ledgerAccounts.find(a => a.id === selectedLedgerAccountId) || practiceData.ledgerAccounts[0];
-  }, [practiceData.ledgerAccounts, selectedLedgerAccountId]);
-
-  // Cálculo dinámico de movimientos con saldo acumulado
-  const calculatedMovements = useMemo(() => {
-    if (!activeLedgerAccount) return [];
-    let runningBalance = 0;
-    let totalDebit = 0;
-    let totalCredit = 0;
-
-    return activeLedgerAccount.movements.map(m => {
-      totalDebit = round2(totalDebit + (Number(m.debit) || 0));
-      totalCredit = round2(totalCredit + (Number(m.credit) || 0));
-
-      const rawDiff = round2(totalDebit - totalCredit);
-      const balanceNature: 'DEUDOR' | 'ACREEDOR' | 'CERO' = 
-        rawDiff > 0 ? 'DEUDOR' : rawDiff < 0 ? 'ACREEDOR' : 'CERO';
-
-      runningBalance = Math.abs(rawDiff);
-
-      return {
-        ...m,
-        runningBalance,
-        balanceNature
-      };
-    });
-  }, [activeLedgerAccount]);
-
-  const ledgerAccountSummary = useMemo(() => {
-    if (!activeLedgerAccount) return { totalDebit: 0, totalCredit: 0, balance: 0, nature: 'CERO' };
-    const totalDebit = round2(activeLedgerAccount.movements.reduce((s, m) => s + (Number(m.debit) || 0), 0));
-    const totalCredit = round2(activeLedgerAccount.movements.reduce((s, m) => s + (Number(m.credit) || 0), 0));
-    const raw = round2(totalDebit - totalCredit);
-    return {
-      totalDebit,
-      totalCredit,
-      balance: Math.abs(raw),
-      nature: raw > 0 ? 'DEUDOR' : raw < 0 ? 'ACREEDOR' : 'CERO'
-    };
-  }, [activeLedgerAccount]);
-
-  const handleAddLedgerAccount = () => {
-    const accCode = prompt('Ingresa el código de la nueva cuenta (ej: 1.1.02):', '1.1.02');
-    if (!accCode) return;
-    const accName = prompt('Ingresa el nombre de la cuenta (ej: Banco Cuenta Corriente):', 'Banco Cuenta Corriente');
-    if (!accName) return;
-
-    const newAccount: ManualLedgerAccount = {
-      id: generateId('acc'),
-      accountCode: accCode.trim(),
-      accountName: accName.trim(),
-      movements: []
-    };
-
-    setPracticeData(prev => ({
-      ...prev,
-      ledgerAccounts: [...prev.ledgerAccounts, newAccount]
-    }));
-    setSelectedLedgerAccountId(newAccount.id);
-  };
-
-  const handleDeleteLedgerAccount = (accountId: string) => {
-    if (practiceData.ledgerAccounts.length <= 1) {
-      alert('Debes conservar al menos una cuenta en el Mayor.');
-      return;
-    }
-    if (window.confirm('¿Deseas eliminar esta cuenta del Libro Mayor manual?')) {
-      const remaining = practiceData.ledgerAccounts.filter(a => a.id !== accountId);
-      setPracticeData(prev => ({
-        ...prev,
-        ledgerAccounts: remaining
-      }));
-      setSelectedLedgerAccountId(remaining[0].id);
-    }
-  };
-
-  const handleAddLedgerMovement = () => {
-    if (!activeLedgerAccount) return;
-    const newMovement: ManualLedgerMovement = {
-      id: generateId('mov'),
-      date: new Date().toISOString().slice(0, 10),
-      detail: 'Detalle del movimiento',
-      entryRef: `Asiento Nº ${activeLedgerAccount.movements.length + 1}`,
-      debit: 0,
-      credit: 0
-    };
-
-    setPracticeData(prev => ({
-      ...prev,
-      ledgerAccounts: prev.ledgerAccounts.map(acc => {
-        if (acc.id === activeLedgerAccount.id) {
-          return {
-            ...acc,
-            movements: [...acc.movements, newMovement]
-          };
-        }
-        return acc;
-      })
-    }));
-  };
-
-  const handleUpdateLedgerMovement = (movId: string, field: keyof ManualLedgerMovement, value: any) => {
-    if (!activeLedgerAccount) return;
-    setPracticeData(prev => ({
-      ...prev,
-      ledgerAccounts: prev.ledgerAccounts.map(acc => {
-        if (acc.id === activeLedgerAccount.id) {
-          return {
-            ...acc,
-            movements: acc.movements.map(m => {
-              if (m.id === movId) {
-                return {
-                  ...m,
-                  [field]: (field === 'debit' || field === 'credit') ? Number(value) || 0 : value
-                };
-              }
-              return m;
-            })
-          };
-        }
-        return acc;
-      })
-    }));
-  };
-
-  const handleDeleteLedgerMovement = (movId: string) => {
-    if (!activeLedgerAccount) return;
-    setPracticeData(prev => ({
-      ...prev,
-      ledgerAccounts: prev.ledgerAccounts.map(acc => {
-        if (acc.id === activeLedgerAccount.id) {
-          return {
-            ...acc,
-            movements: acc.movements.filter(m => m.id !== movId)
-          };
-        }
-        return acc;
-      })
-    }));
-  };
-
-  /* =========================================================================================
-     3. HERRAMIENTA: PLANILLAS DE COSTOS
-     ========================================================================================= */
-  const [selectedCostSheetId, setSelectedCostSheetId] = useState<string>(() => {
-    return practiceData.costSheets[0]?.id || '';
-  });
-
-  const activeCostSheet = useMemo(() => {
-    return practiceData.costSheets.find(s => s.id === selectedCostSheetId) || practiceData.costSheets[0];
-  }, [practiceData.costSheets, selectedCostSheetId]);
-
-  const costSheetGrandTotal = useMemo(() => {
-    if (!activeCostSheet) return 0;
-    return round2(activeCostSheet.rows.reduce((sum, r) => sum + (Number(r.total) || 0), 0));
-  }, [activeCostSheet]);
-
-  const handleAddCostSheet = () => {
-    const title = prompt('Ingresa el título de la nueva planilla de costos:', 'Nueva Planilla de Costos');
-    if (!title) return;
-    const description = prompt('Descripción del cálculo o caso:', 'Cálculo de componentes del costo');
-
-    const newSheet: CostSheet = {
-      id: generateId('sheet'),
-      title: title.trim(),
-      description: description?.trim() || '',
-      rows: [
-        {
-          id: generateId('c_row'),
-          concept: 'Componente / Concepto de costo',
-          quantity: 1,
-          unitCost: 0,
-          total: 0,
-          notes: ''
-        }
-      ]
-    };
-
-    setPracticeData(prev => ({
-      ...prev,
-      costSheets: [...prev.costSheets, newSheet]
-    }));
-    setSelectedCostSheetId(newSheet.id);
-  };
-
-  const handleDeleteCostSheet = (sheetId: string) => {
-    if (practiceData.costSheets.length <= 1) {
-      alert('Debes conservar al menos una planilla de costos.');
-      return;
-    }
-    if (window.confirm('¿Deseas eliminar esta planilla de costos?')) {
-      const remaining = practiceData.costSheets.filter(s => s.id !== sheetId);
-      setPracticeData(prev => ({
-        ...prev,
-        costSheets: remaining
-      }));
-      setSelectedCostSheetId(remaining[0].id);
-    }
-  };
-
-  const handleAddCostRow = () => {
-    if (!activeCostSheet) return;
-    const newRow: CostSheetRow = {
-      id: generateId('c_row'),
-      concept: 'Nuevo concepto de costo',
-      quantity: 1,
-      unitCost: 0,
-      total: 0,
-      notes: ''
-    };
-
-    setPracticeData(prev => ({
-      ...prev,
-      costSheets: prev.costSheets.map(s => {
-        if (s.id === activeCostSheet.id) {
-          return {
-            ...s,
-            rows: [...s.rows, newRow]
-          };
-        }
-        return s;
-      })
-    }));
-  };
-
-  const handleUpdateCostRow = (rowId: string, field: keyof CostSheetRow, value: any) => {
-    if (!activeCostSheet) return;
-    setPracticeData(prev => ({
-      ...prev,
-      costSheets: prev.costSheets.map(s => {
-        if (s.id === activeCostSheet.id) {
-          return {
-            ...s,
-            rows: s.rows.map(r => {
-              if (r.id === rowId) {
-                const updated = { ...r, [field]: value };
-                if (field === 'quantity' || field === 'unitCost') {
-                  const qty = field === 'quantity' ? Number(value) || 0 : r.quantity;
-                  const unit = field === 'unitCost' ? Number(value) || 0 : r.unitCost;
-                  updated.total = round2(qty * unit);
-                } else if (field === 'total') {
-                  updated.total = Number(value) || 0;
-                }
-                return updated;
-              }
-              return r;
-            })
-          };
-        }
-        return s;
-      })
-    }));
-  };
-
-  const handleDeleteCostRow = (rowId: string) => {
-    if (!activeCostSheet) return;
-    setPracticeData(prev => ({
-      ...prev,
-      costSheets: prev.costSheets.map(s => {
-        if (s.id === activeCostSheet.id) {
-          return {
-            ...s,
-            rows: s.rows.filter(r => r.id !== rowId)
-          };
-        }
-        return s;
-      })
     }));
   };
 
@@ -414,14 +517,14 @@ export const PracticeView: React.FC = () => {
               Taller de Práctica Manual
             </span>
             <span className="text-xs text-slate-400">
-              Espacio independiente de práctica libre
+              Sistemas de Información Contable (SIC)
             </span>
           </div>
-          <h2 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2">
+          <h2 className="text-2xl font-bold text-white tracking-tight">
             Práctica Contable
           </h2>
           <p className="text-sm text-slate-400 max-w-2xl mt-1">
-            Resuelve tus propios ejercicios contables de forma práctica y ordenada. Incluye <strong>Libro Diario</strong> con balance automático, <strong>Libro Mayor</strong> con saldos acumulados y <strong>Planillas de Costos</strong> con importes calculados en vivo.
+            Espacio de trabajo para resolver ejercicios con <strong>Libro Mayor en cuentas en “T”</strong> clasificadas por rubro, <strong>Planilla al Costo de cátedra</strong> (Entrada, Salida y Saldo) y <strong>Libro Diario manual</strong>.
           </p>
         </div>
 
@@ -431,45 +534,30 @@ export const PracticeView: React.FC = () => {
             <span>Guardado automático</span>
           </div>
           <button
-            onClick={handleResetDefaults}
+            onClick={handleResetClean}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium border border-slate-700 transition"
-            title="Restaurar ejercicios prácticos de ejemplo"
+            title="Limpiar y reiniciar registros de práctica"
           >
             <RotateCcw className="w-3.5 h-3.5 text-slate-400" />
-            <span className="hidden sm:inline">Reiniciar</span>
+            <span className="hidden sm:inline">Vaciar Tablero</span>
           </button>
         </div>
       </div>
 
-      {/* Pestañas de Navegación entre las 3 Herramientas dentro de la misma página */}
+      {/* Pestañas Principales dentro de Práctica Contable */}
       <div className="flex items-center gap-2 bg-slate-900/80 p-1.5 rounded-2xl border border-slate-800 overflow-x-auto">
         <button
-          onClick={() => setActivePracticeTab('journal')}
+          onClick={() => setActivePracticeTab('tAccounts')}
           className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold transition ${
-            activePracticeTab === 'journal'
-              ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
-              : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
-          }`}
-        >
-          <BookOpen className="w-4 h-4" />
-          <span>1. Libro Diario Manual</span>
-          <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-black/40 text-indigo-200 font-mono">
-            {practiceData.journalRows.length} filas
-          </span>
-        </button>
-
-        <button
-          onClick={() => setActivePracticeTab('ledger')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold transition ${
-            activePracticeTab === 'ledger'
+            activePracticeTab === 'tAccounts'
               ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
               : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
           }`}
         >
           <GitCommitVertical className="w-4 h-4" />
-          <span>2. Libro Mayor Manual</span>
+          <span>1. Libro Mayor: Cuentas en “T”</span>
           <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-black/40 text-indigo-200 font-mono">
-            {practiceData.ledgerAccounts.length} cuentas
+            {practiceData.tAccounts.length} cuentas
           </span>
         </button>
 
@@ -482,20 +570,907 @@ export const PracticeView: React.FC = () => {
           }`}
         >
           <Calculator className="w-4 h-4" />
-          <span>3. Planillas de Costos</span>
+          <span>2. Planilla al Costo (Inventario Permanente)</span>
           <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-black/40 text-indigo-200 font-mono">
-            {practiceData.costSheets.length} planillas
+            {activeFacultySheet?.rows.length || 0} movs.
+          </span>
+        </button>
+
+        <button
+          onClick={() => setActivePracticeTab('journal')}
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold transition ${
+            activePracticeTab === 'journal'
+              ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+              : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+          }`}
+        >
+          <BookOpen className="w-4 h-4" />
+          <span>3. Libro Diario Manual</span>
+          <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-black/40 text-indigo-200 font-mono">
+            {practiceData.journalRows.length} partidas
           </span>
         </button>
       </div>
 
       {/* =========================================================================================
-          VISTA 1: LIBRO DIARIO MANUAL
+          HERRAMIENTA 1: LIBRO MAYOR CON CUENTAS EN "T" (4 Secciones Verticales)
+          ========================================================================================= */}
+      {activePracticeTab === 'tAccounts' && (
+        <div className="space-y-6">
+          
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 bg-slate-900/60 p-4 rounded-2xl border border-slate-800">
+            <div>
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <GitCommitVertical className="w-4 h-4 text-indigo-400" />
+                Espacio de Trabajo Visual: Cuentas en “T”
+              </h3>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Organizado en cuatro secciones según la clasificación contable: <strong>Activo</strong>, <strong>Pasivo</strong>, <strong>Patrimonio Neto</strong> y <strong>Resultados</strong>.
+              </p>
+            </div>
+            <div className="text-xs text-slate-400 font-sans flex items-center gap-1.5">
+              <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+              <span>Haz clic en <strong>+ Importe</strong> para registrar montos al Debe o al Haber.</span>
+            </div>
+          </div>
+
+          {/* Grid de 4 Secciones Verticales (Activo, Pasivo, PN, Resultados) */}
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-5 items-start">
+            {categories.map((cat) => {
+              const categoryAccounts = practiceData.tAccounts.filter(a => a.category === cat.id);
+
+              return (
+                <div 
+                  key={cat.id}
+                  className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4 space-y-4 shadow-lg min-h-[500px] flex flex-col justify-between"
+                >
+                  <div className="space-y-3">
+                    {/* Encabezado de la Sección */}
+                    <div className="flex items-center justify-between pb-2.5 border-b border-slate-800">
+                      <div>
+                        <h4 className="text-sm font-extrabold text-white flex items-center gap-1.5">
+                          <span>{cat.label}</span>
+                        </h4>
+                        <span className="text-[10px] text-slate-400">{cat.badge}</span>
+                      </div>
+                      <button
+                        onClick={() => handleAddTAccount(cat.id)}
+                        className="flex items-center gap-1 px-2.5 py-1 rounded-xl bg-indigo-600/30 hover:bg-indigo-600 text-indigo-200 hover:text-white text-xs font-semibold border border-indigo-500/30 transition shadow-sm"
+                        title={`Agregar nueva cuenta en T en ${cat.label}`}
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Nueva T</span>
+                      </button>
+                    </div>
+
+                    {/* Cuentas en T de esta Sección */}
+                    {categoryAccounts.length === 0 ? (
+                      <div className="py-12 text-center text-slate-500 text-xs border border-dashed border-slate-800/80 rounded-xl p-4">
+                        <p>Sin cuentas en {cat.label}.</p>
+                        <button
+                          onClick={() => handleAddTAccount(cat.id)}
+                          className="mt-2 text-indigo-400 hover:text-indigo-300 font-semibold text-xs inline-flex items-center gap-1"
+                        >
+                          <Plus className="w-3.5 h-3.5" /> Crear cuenta
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        {categoryAccounts.map((account) => {
+                          const totalDebit = round2(account.debits.reduce((s, m) => s + (Number(m.amount) || 0), 0));
+                          const totalCredit = round2(account.credits.reduce((s, m) => s + (Number(m.amount) || 0), 0));
+                          const balance = round2(Math.abs(totalDebit - totalCredit));
+                          const nature: 'DEUDOR' | 'ACREEDOR' | 'SALDADA' = 
+                            totalDebit > totalCredit ? 'DEUDOR' : totalCredit > totalDebit ? 'ACREEDOR' : 'SALDADA';
+
+                          return (
+                            <div 
+                              key={account.id}
+                              className="rounded-xl border border-slate-700/80 bg-slate-950 p-3 shadow-md space-y-2 group transition hover:border-indigo-500/60"
+                            >
+                              {/* Nombre de la Cuenta (Parte Superior de la T) */}
+                              <div className="flex items-center justify-between gap-2 border-b border-slate-800 pb-1.5">
+                                <div className="flex-1">
+                                  <input
+                                    type="text"
+                                    value={account.name}
+                                    onChange={(e) => handleUpdateTAccountMeta(account.id, e.target.value, account.code)}
+                                    placeholder="Nombre de la cuenta..."
+                                    className="w-full bg-transparent text-xs font-bold text-white focus:outline-none focus:text-indigo-300 tracking-tight"
+                                  />
+                                  {account.code && (
+                                    <span className="text-[10px] text-slate-500 font-mono">
+                                      {account.code}
+                                    </span>
+                                  )}
+                                </div>
+                                <button
+                                  onClick={() => handleDeleteTAccount(account.id)}
+                                  className="text-slate-600 hover:text-rose-400 p-1 rounded transition opacity-60 group-hover:opacity-100"
+                                  title="Eliminar cuenta en T"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                </button>
+                              </div>
+
+                              {/* Barra Horizontal Superior de la "T" Contable Tradicional */}
+                              <div className="border-b-2 border-slate-200 text-[10px] font-mono uppercase tracking-wider flex justify-between px-2 pb-0.5 text-slate-300 font-bold">
+                                <span>DEBE</span>
+                                <span>HABER</span>
+                              </div>
+
+                              {/* Cuerpo de la "T" (Separador Vertical Central) */}
+                              <div className="grid grid-cols-2 divide-x-2 divide-slate-200 text-xs font-mono min-h-[90px]">
+                                
+                                {/* Columna Izquierda: DEBE */}
+                                <div className="pr-1.5 space-y-1">
+                                  {account.debits.map((mov) => {
+                                    const isEditing = editingMovement?.accountId === account.id && editingMovement.side === 'debit' && editingMovement.movId === mov.id;
+
+                                    return (
+                                      <div 
+                                        key={mov.id}
+                                        className="flex items-center justify-between text-[11px] py-0.5 px-1 rounded hover:bg-slate-900 group/mov"
+                                      >
+                                        <span className="text-slate-500 text-[10px]">{mov.ref ? `(${mov.ref})` : ''}</span>
+                                        <div className="flex items-center gap-1">
+                                          {isEditing ? (
+                                            <div className="flex items-center gap-1">
+                                              <input
+                                                type="number"
+                                                step="any"
+                                                autoFocus
+                                                value={editingMovement.amount}
+                                                onChange={(e) => setEditingMovement({ ...editingMovement, amount: e.target.value })}
+                                                onKeyDown={(e) => {
+                                                  if (e.key === 'Enter') handleConfirmEditMovement(account.id, 'debit', mov.id);
+                                                  if (e.key === 'Escape') setEditingMovement(null);
+                                                }}
+                                                className="w-16 px-1 py-0.2 bg-slate-900 text-blue-300 font-bold rounded border border-blue-500 text-xs text-right focus:outline-none"
+                                              />
+                                              <button
+                                                onClick={() => handleConfirmEditMovement(account.id, 'debit', mov.id)}
+                                                className="text-emerald-400 hover:text-emerald-300 font-bold text-xs"
+                                                title="Confirmar"
+                                              >
+                                                ✓
+                                              </button>
+                                              <button
+                                                onClick={() => setEditingMovement(null)}
+                                                className="text-slate-500 hover:text-white text-xs"
+                                                title="Cancelar"
+                                              >
+                                                ✕
+                                              </button>
+                                            </div>
+                                          ) : (
+                                            <button
+                                              onClick={() => setEditingMovement({ accountId: account.id, side: 'debit', movId: mov.id, amount: mov.amount.toString() })}
+                                              className="text-blue-300 hover:underline font-semibold"
+                                              title="Clic para editar importe"
+                                            >
+                                              {formatCurrency(mov.amount)}
+                                            </button>
+                                          )}
+                                          <button
+                                            onClick={() => handleDeleteTMovement(account.id, 'debit', mov.id)}
+                                            className="text-slate-600 hover:text-rose-400 opacity-0 group-hover/mov:opacity-100 transition text-[9px]"
+                                            title="Eliminar"
+                                          >
+                                            ×
+                                          </button>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+
+                                  {/* Inserción Rápida Inline o Botón + Debe */}
+                                  {inlineAdding?.accountId === account.id && inlineAdding.side === 'debit' ? (
+                                    <div className="p-1 rounded bg-blue-950/40 border border-blue-500/50 space-y-1 my-1">
+                                      <input
+                                        type="number"
+                                        step="any"
+                                        autoFocus
+                                        placeholder="$ Monto"
+                                        value={inlineAmount}
+                                        onChange={(e) => setInlineAmount(e.target.value)}
+                                        onKeyDown={(e) => {
+                                          if (e.key === 'Enter') handleConfirmInlineMovement(account.id, 'debit');
+                                          if (e.key === 'Escape') setInlineAdding(null);
+                                        }}
+                                        className="w-full px-1.5 py-0.5 bg-slate-950 text-blue-200 font-bold rounded border border-slate-700 text-xs focus:outline-none focus:border-blue-400 text-right"
+                                      />
+                                      <div className="flex items-center gap-1">
+                                        <input
+                                          type="text"
+                                          placeholder="Ref. (opc)"
+                                          value={inlineRef}
+                                          onChange={(e) => setInlineRef(e.target.value)}
+                                          onKeyDown={(e) => {
+                                            if (e.key === 'Enter') handleConfirmInlineMovement(account.id, 'debit');
+                                            if (e.key === 'Escape') setInlineAdding(null);
+                                          }}
+                                          className="w-full px-1 py-0.5 bg-slate-950 text-slate-300 rounded border border-slate-700 text-[10px] focus:outline-none"
+                                        />
+                                        <button
+                                          onClick={() => handleConfirmInlineMovement(account.id, 'debit')}
+                                          className="px-1.5 py-0.5 bg-blue-600 hover:bg-blue-500 text-white rounded text-[10px] font-bold"
+                                        >
+                                          ✓
+                                        </button>
+                                        <button
+                                          onClick={() => setInlineAdding(null)}
+                                          className="px-1 text-slate-400 hover:text-white text-[10px]"
+                                        >
+                                          ✕
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <button
+                                      onClick={() => {
+                                        setInlineAdding({ accountId: account.id, side: 'debit' });
+                                        setInlineAmount('');
+                                        setInlineRef('');
+                                      }}
+                                      className="w-full mt-1 py-0.5 text-[10px] text-slate-500 hover:text-blue-300 hover:bg-slate-900 rounded border border-dashed border-slate-800 transition"
+                                    >
+                                      + Debe
+                                    </button>
+                                  )}
+                                </div>
+
+                                {/* Columna Derecha: HABER */}
+                                <div className="pl-1.5 space-y-1">
+                                  {account.credits.map((mov) => {
+                                    const isEditing = editingMovement?.accountId === account.id && editingMovement.side === 'credit' && editingMovement.movId === mov.id;
+
+                                    return (
+                                      <div 
+                                        key={mov.id}
+                                        className="flex items-center justify-between text-[11px] py-0.5 px-1 rounded hover:bg-slate-900 group/mov"
+                                      >
+                                        <span className="text-slate-500 text-[10px]">{mov.ref ? `(${mov.ref})` : ''}</span>
+                                        <div className="flex items-center gap-1">
+                                          {isEditing ? (
+                                            <div className="flex items-center gap-1">
+                                              <input
+                                                type="number"
+                                                step="any"
+                                                autoFocus
+                                                value={editingMovement.amount}
+                                                onChange={(e) => setEditingMovement({ ...editingMovement, amount: e.target.value })}
+                                                onKeyDown={(e) => {
+                                                  if (e.key === 'Enter') handleConfirmEditMovement(account.id, 'credit', mov.id);
+                                                  if (e.key === 'Escape') setEditingMovement(null);
+                                                }}
+                                                className="w-16 px-1 py-0.2 bg-slate-900 text-emerald-300 font-bold rounded border border-emerald-500 text-xs text-right focus:outline-none"
+                                              />
+                                              <button
+                                                onClick={() => handleConfirmEditMovement(account.id, 'credit', mov.id)}
+                                                className="text-emerald-400 hover:text-emerald-300 font-bold text-xs"
+                                                title="Confirmar"
+                                              >
+                                                ✓
+                                              </button>
+                                              <button
+                                                onClick={() => setEditingMovement(null)}
+                                                className="text-slate-500 hover:text-white text-xs"
+                                                title="Cancelar"
+                                              >
+                                                ✕
+                                              </button>
+                                            </div>
+                                          ) : (
+                                            <button
+                                              onClick={() => setEditingMovement({ accountId: account.id, side: 'credit', movId: mov.id, amount: mov.amount.toString() })}
+                                              className="text-emerald-300 hover:underline font-semibold"
+                                              title="Clic para editar importe"
+                                            >
+                                              {formatCurrency(mov.amount)}
+                                            </button>
+                                          )}
+                                          <button
+                                            onClick={() => handleDeleteTMovement(account.id, 'credit', mov.id)}
+                                            className="text-slate-600 hover:text-rose-400 opacity-0 group-hover/mov:opacity-100 transition text-[9px]"
+                                            title="Eliminar"
+                                          >
+                                            ×
+                                          </button>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+
+                                  {/* Inserción Rápida Inline o Botón + Haber */}
+                                  {inlineAdding?.accountId === account.id && inlineAdding.side === 'credit' ? (
+                                    <div className="p-1 rounded bg-emerald-950/40 border border-emerald-500/50 space-y-1 my-1">
+                                      <input
+                                        type="number"
+                                        step="any"
+                                        autoFocus
+                                        placeholder="$ Monto"
+                                        value={inlineAmount}
+                                        onChange={(e) => setInlineAmount(e.target.value)}
+                                        onKeyDown={(e) => {
+                                          if (e.key === 'Enter') handleConfirmInlineMovement(account.id, 'credit');
+                                          if (e.key === 'Escape') setInlineAdding(null);
+                                        }}
+                                        className="w-full px-1.5 py-0.5 bg-slate-950 text-emerald-200 font-bold rounded border border-slate-700 text-xs focus:outline-none focus:border-emerald-400 text-right"
+                                      />
+                                      <div className="flex items-center gap-1">
+                                        <input
+                                          type="text"
+                                          placeholder="Ref. (opc)"
+                                          value={inlineRef}
+                                          onChange={(e) => setInlineRef(e.target.value)}
+                                          onKeyDown={(e) => {
+                                            if (e.key === 'Enter') handleConfirmInlineMovement(account.id, 'credit');
+                                            if (e.key === 'Escape') setInlineAdding(null);
+                                          }}
+                                          className="w-full px-1 py-0.5 bg-slate-950 text-slate-300 rounded border border-slate-700 text-[10px] focus:outline-none"
+                                        />
+                                        <button
+                                          onClick={() => handleConfirmInlineMovement(account.id, 'credit')}
+                                          className="px-1.5 py-0.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-[10px] font-bold"
+                                        >
+                                          ✓
+                                        </button>
+                                        <button
+                                          onClick={() => setInlineAdding(null)}
+                                          className="px-1 text-slate-400 hover:text-white text-[10px]"
+                                        >
+                                          ✕
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <button
+                                      onClick={() => {
+                                        setInlineAdding({ accountId: account.id, side: 'credit' });
+                                        setInlineAmount('');
+                                        setInlineRef('');
+                                      }}
+                                      className="w-full mt-1 py-0.5 text-[10px] text-slate-500 hover:text-emerald-300 hover:bg-slate-900 rounded border border-dashed border-slate-800 transition"
+                                    >
+                                      + Haber
+                                    </button>
+                                  )}
+                                </div>
+
+                              </div>
+
+                              {/* Pie de la Cuenta en T: Totales y Saldo Calculado */}
+                              <div className="border-t-2 border-slate-200 pt-1.5 font-mono text-xs">
+                                <div className="grid grid-cols-2 divide-x-2 divide-slate-200 pb-1.5 text-[11px]">
+                                  <div className="pr-1 text-right font-bold text-blue-300">
+                                    {formatCurrency(totalDebit)}
+                                  </div>
+                                  <div className="pl-1 text-right font-bold text-emerald-300">
+                                    {formatCurrency(totalCredit)}
+                                  </div>
+                                </div>
+
+                                <div className={`p-1.5 rounded-lg text-center font-bold text-[11px] border ${
+                                  nature === 'DEUDOR' 
+                                    ? 'bg-blue-950/40 text-blue-300 border-blue-800/40' 
+                                    : nature === 'ACREEDOR' 
+                                      ? 'bg-emerald-950/40 text-emerald-300 border-emerald-800/40' 
+                                      : 'bg-slate-900 text-slate-400 border-slate-800'
+                                }`}>
+                                  {nature === 'SALDADA' ? (
+                                    <span>Cuenta Saldada ($ 0,00)</span>
+                                  ) : (
+                                    <span>Saldo {nature}: {formatCurrency(balance)}</span>
+                                  )}
+                                </div>
+                              </div>
+
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="pt-2 border-t border-slate-800/60 text-center">
+                    <button
+                      onClick={() => handleAddTAccount(cat.id)}
+                      className="w-full py-1.5 text-xs text-slate-400 hover:text-white rounded-xl bg-slate-950/60 hover:bg-slate-800 border border-slate-800 transition"
+                    >
+                      + Agregar otra cuenta en {cat.label}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+        </div>
+      )}
+
+      {/* =========================================================================================
+          HERRAMIENTA 2: PLANILLA AL COSTO (FORMATO DE CÁTEDRA - Imagen 4)
+          ========================================================================================= */}
+      {activePracticeTab === 'costs' && (
+        <div className="space-y-5">
+          
+          {/* Sub-selector entre Planilla de Cátedra y Otras Planillas */}
+          <div className="flex items-center justify-between gap-3 border-b border-slate-800 pb-3 flex-wrap">
+            <div className="flex items-center gap-2 bg-slate-950 p-1 rounded-xl border border-slate-800">
+              <button
+                onClick={() => setCostToolTab('inventory')}
+                className={`text-xs px-3.5 py-1.5 rounded-lg font-semibold transition ${
+                  costToolTab === 'inventory' 
+                    ? 'bg-cyan-600 text-white shadow-sm' 
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                Planilla al Costo (Inventario Permanente - Cátedra)
+              </button>
+              <button
+                onClick={() => setCostToolTab('generic')}
+                className={`text-xs px-3.5 py-1.5 rounded-lg font-semibold transition ${
+                  costToolTab === 'generic' 
+                    ? 'bg-cyan-600 text-white shadow-sm' 
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                Otras Planillas de Costos (RT 17 / Reacondicionamiento)
+              </button>
+            </div>
+
+            {costToolTab === 'inventory' && (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleAddFacultySheet}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Nueva Planilla</span>
+                </button>
+                {activeFacultySheet && (
+                  <button
+                    onClick={() => handleDeleteFacultySheet(activeFacultySheet.id)}
+                    className="p-1.5 rounded-xl bg-slate-800 hover:bg-rose-950/40 text-slate-400 hover:text-rose-400 border border-slate-700 transition"
+                    title="Eliminar planilla actual"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* VISTA A: PLANILLA DE CÁTEDRA (Imagen 4) */}
+          {costToolTab === 'inventory' && activeFacultySheet && (
+            <div className="space-y-4">
+              
+              {/* Encabezado Formal de la Planilla según Imagen 4 */}
+              <div className="p-5 rounded-2xl bg-gradient-to-r from-slate-900 via-slate-900/90 to-slate-900 border border-slate-800 space-y-4">
+                <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 border-b border-slate-800 pb-3">
+                  <div>
+                    <h3 className="text-base font-extrabold text-white tracking-wide uppercase font-mono flex items-center gap-2">
+                      PLANILLA AL COSTO — Método de Inventario Permanente: {activeFacultySheet.method}
+                    </h3>
+                    <div className="flex items-center gap-3 text-xs text-slate-400 mt-1">
+                      <span>Producto / Bien: <strong className="text-slate-200">{activeFacultySheet.productName}</strong></span>
+                      <span>•</span>
+                      <span>Unidad de Medida: <strong className="text-slate-200">{activeFacultySheet.unitOfMeasure}</strong></span>
+                    </div>
+                  </div>
+
+                  {/* Selector del Método de Valuación (PEPS, UEPS, PPP, Identificación Específica) */}
+                  <div className="flex items-center gap-1.5 bg-slate-950 p-1 rounded-xl border border-slate-800">
+                    {(['PEPS', 'UEPS', 'PPP', 'ESPECIFICA'] as const).map(m => (
+                      <button
+                        key={m}
+                        onClick={() => handleChangeSheetMethod(m)}
+                        className={`text-xs px-3 py-1.5 rounded-lg font-bold transition ${
+                          activeFacultySheet.method === m 
+                            ? 'bg-cyan-600 text-white shadow-sm' 
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        {m}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Tarjetas de Resumen en Vivo */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 font-mono text-xs">
+                  <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800">
+                    <span className="text-[10px] text-slate-400 uppercase font-sans">Stock en Saldo Final</span>
+                    <div className="text-base font-bold text-white mt-0.5">
+                      {formatQuantity(sheetSummary.endingUnits)} {activeFacultySheet.unitOfMeasure}
+                    </div>
+                  </div>
+                  <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800">
+                    <span className="text-[10px] text-slate-400 uppercase font-sans">Valuación Inventario Final</span>
+                    <div className="text-base font-bold text-cyan-400 mt-0.5">
+                      {formatCurrency(sheetSummary.endingTotal)}
+                    </div>
+                  </div>
+                  <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800">
+                    <span className="text-[10px] text-slate-400 uppercase font-sans">Total Salidas (CMV)</span>
+                    <div className="text-base font-bold text-rose-400 mt-0.5">
+                      {formatCurrency(sheetSummary.totalCMV)}
+                    </div>
+                  </div>
+                  <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800">
+                    <span className="text-[10px] text-slate-400 uppercase font-sans">Total Entradas (Compras)</span>
+                    <div className="text-base font-bold text-blue-300 mt-0.5">
+                      {formatCurrency(sheetSummary.totalPurchases)}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Botones de Carga Rápida de Operaciones */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  onClick={() => handleAddFacultyRow('COMPRA')}
+                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold transition shadow-sm"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>+ Entrada (Compra / Ingreso)</span>
+                </button>
+                <button
+                  onClick={() => handleAddFacultyRow('VENTA')}
+                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold transition shadow-sm"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>+ Salida (Venta / CMV)</span>
+                </button>
+                <button
+                  onClick={() => handleAddFacultyRow('DEV_COMPRA')}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-300 text-xs font-medium border border-slate-700 transition"
+                  title="Devolución de compras (restando en Entrada)"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Devolución Compra</span>
+                </button>
+                <button
+                  onClick={() => handleAddFacultyRow('DEV_VENTA')}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-purple-300 text-xs font-medium border border-slate-700 transition"
+                  title="Devolución de ventas (restando en Salida)"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Devolución Venta</span>
+                </button>
+              </div>
+
+              {/* TABLA DE 11 COLUMNAS AGRUPADAS EN 3 BLOQUES (IMAGEN 4) */}
+              <div className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900/70 shadow-xl">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead>
+                    {/* Fila Superior: Agrupación en Entrada, Salida y Saldo */}
+                    <tr className="bg-slate-950 text-slate-400 uppercase font-mono text-[11px] border-b border-slate-800 text-center">
+                      <th colSpan={2} className="py-2.5 px-3 border-r border-slate-800">
+                        Operación
+                      </th>
+                      <th colSpan={3} className="py-2.5 px-3 border-r border-slate-800 text-blue-300 bg-blue-950/30 font-extrabold tracking-wider">
+                        Entrada
+                      </th>
+                      <th colSpan={3} className="py-2.5 px-3 border-r border-slate-800 text-rose-300 bg-rose-950/30 font-extrabold tracking-wider">
+                        Salida
+                      </th>
+                      <th colSpan={3} className="py-2.5 px-3 text-emerald-300 bg-emerald-950/30 font-extrabold tracking-wider">
+                        Saldo
+                      </th>
+                      <th className="py-2.5 px-2 w-10"></th>
+                    </tr>
+
+                    {/* Fila Inferior de Columnas Específicas */}
+                    <tr className="bg-slate-950/90 text-slate-400 font-mono text-[10px] uppercase border-b border-slate-800">
+                      <th className="py-2 px-3 w-28">Fecha</th>
+                      <th className="py-2 px-3 w-48 border-r border-slate-800 font-sans">Concepto</th>
+
+                      {/* Entrada */}
+                      <th className="py-2 px-2.5 text-right bg-blue-950/15">Unid</th>
+                      <th className="py-2 px-2.5 text-right bg-blue-950/15">P. U.</th>
+                      <th className="py-2 px-2.5 text-right border-r border-slate-800 bg-blue-950/15 font-bold text-blue-300">Total</th>
+
+                      {/* Salida */}
+                      <th className="py-2 px-2.5 text-right bg-rose-950/15">Unid</th>
+                      <th className="py-2 px-2.5 text-right bg-rose-950/15">P. U.</th>
+                      <th className="py-2 px-2.5 text-right border-r border-slate-800 bg-rose-950/15 font-bold text-rose-300">Total</th>
+
+                      {/* Saldo */}
+                      <th className="py-2 px-2.5 text-right bg-emerald-950/15">Unid</th>
+                      <th className="py-2 px-2.5 text-right bg-emerald-950/15">P. U.</th>
+                      <th className="py-2 px-2.5 text-right bg-emerald-950/15 font-bold text-emerald-300">Total</th>
+
+                      <th className="py-2 px-2 text-center">Acción</th>
+                    </tr>
+                  </thead>
+
+                  <tbody className="divide-y divide-slate-800/60 font-mono text-slate-200">
+                    {activeFacultySheet.rows.length === 0 ? (
+                      <tr>
+                        <td colSpan={12} className="py-10 text-center text-slate-500 font-sans">
+                          No hay operaciones cargadas en la planilla. Haz clic en <strong>+ Entrada</strong> o <strong>+ Salida</strong> para comenzar.
+                        </td>
+                      </tr>
+                    ) : (
+                      activeFacultySheet.rows.map((row) => (
+                        <tr key={row.id} className="hover:bg-slate-800/40 transition group">
+                          
+                          {/* Fecha */}
+                          <td className="py-2 px-2">
+                            <input
+                              type="date"
+                              value={row.date}
+                              onChange={(e) => handleUpdateFacultyRow(row.id, 'date', e.target.value)}
+                              className="w-full px-2 py-1 text-slate-300 rounded bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-cyan-500 text-[11px]"
+                            />
+                          </td>
+
+                          {/* Concepto */}
+                          <td className="py-2 px-2 border-r border-slate-800 font-sans">
+                            <input
+                              type="text"
+                              value={row.concept}
+                              onChange={(e) => handleUpdateFacultyRow(row.id, 'concept', e.target.value)}
+                              placeholder="Compra, Venta, etc."
+                              className="w-full px-2 py-1 text-white font-medium rounded bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-cyan-500 text-xs"
+                            />
+                          </td>
+
+                          {/* Entrada: Unidades */}
+                          <td className="py-2 px-1.5 bg-blue-950/5">
+                            <input
+                              type="number"
+                              min="0"
+                              step="any"
+                              value={row.inUnits || ''}
+                              onChange={(e) => handleUpdateFacultyRow(row.id, 'inUnits', e.target.value)}
+                              placeholder="0"
+                              disabled={row.outUnits > 0 && row.type === 'VENTA'}
+                              className="w-20 px-2 py-1 text-right text-blue-200 font-bold rounded bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-blue-500 text-xs disabled:opacity-30"
+                            />
+                          </td>
+
+                          {/* Entrada: P. U. */}
+                          <td className="py-2 px-1.5 bg-blue-950/5">
+                            <input
+                              type="number"
+                              min="0"
+                              step="any"
+                              value={row.inUnitPrice || ''}
+                              onChange={(e) => handleUpdateFacultyRow(row.id, 'inUnitPrice', e.target.value)}
+                              placeholder="0.00"
+                              disabled={row.outUnits > 0 && row.type === 'VENTA'}
+                              className="w-24 px-2 py-1 text-right text-slate-300 rounded bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-blue-500 text-xs disabled:opacity-30"
+                            />
+                          </td>
+
+                          {/* Entrada: Total */}
+                          <td className="py-2 px-2 text-right border-r border-slate-800 bg-blue-950/5 font-bold text-blue-300 whitespace-nowrap min-w-[95px]">
+                            {row.inTotal > 0 ? formatCurrency(row.inTotal) : '-'}
+                          </td>
+
+                          {/* Salida: Unidades */}
+                          <td className="py-2 px-1.5 bg-rose-950/5">
+                            <input
+                              type="number"
+                              min="0"
+                              step="any"
+                              value={row.outUnits || ''}
+                              onChange={(e) => handleUpdateFacultyRow(row.id, 'outUnits', e.target.value)}
+                              placeholder="0"
+                              disabled={row.inUnits > 0 && row.type !== 'VENTA' && row.type !== 'DEV_VENTA'}
+                              className="w-20 px-2 py-1 text-right text-rose-200 font-bold rounded bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-rose-500 text-xs disabled:opacity-30"
+                            />
+                          </td>
+
+                          {/* Salida: P. U. (Calculado automáticamente por el método o editable) */}
+                          <td className="py-2 px-2 text-right bg-rose-950/5 text-slate-300 whitespace-nowrap min-w-[85px]">
+                            {row.outUnitPrice > 0 ? formatCurrency(row.outUnitPrice) : '-'}
+                          </td>
+
+                          {/* Salida: Total (CMV calculado) */}
+                          <td className="py-2 px-2 text-right border-r border-slate-800 bg-rose-950/5 font-bold text-rose-300 whitespace-nowrap min-w-[95px]">
+                            {row.outTotal > 0 ? formatCurrency(row.outTotal) : '-'}
+                          </td>
+
+                          {/* Saldo: Unidades */}
+                          <td className="py-2 px-2 text-right bg-emerald-950/5 font-bold text-white whitespace-nowrap min-w-[70px]">
+                            {formatQuantity(row.balanceUnits)}
+                          </td>
+
+                          {/* Saldo: P. U. */}
+                          <td className="py-2 px-2 text-right bg-emerald-950/5 text-slate-300 whitespace-nowrap min-w-[85px]">
+                            {formatCurrency(row.balanceUnitPrice)}
+                          </td>
+
+                          {/* Saldo: Total */}
+                          <td className="py-2 px-2 text-right bg-emerald-950/5 font-bold text-emerald-300 whitespace-nowrap min-w-[95px]">
+                            {formatCurrency(row.balanceTotal)}
+                          </td>
+
+                          {/* Eliminar Fila */}
+                          <td className="py-2 px-2 text-center">
+                            <button
+                              onClick={() => handleDeleteFacultyRow(row.id)}
+                              className="p-1 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-950/30 transition opacity-60 group-hover:opacity-100"
+                              title="Eliminar operación"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </td>
+
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+
+                  {/* Fila de Totales de Control */}
+                  <tfoot className="bg-slate-950 text-white font-bold font-mono border-t-2 border-slate-800 text-xs">
+                    <tr>
+                      <td colSpan={2} className="py-3 px-3 uppercase font-sans text-right border-r border-slate-800">
+                        Totales:
+                      </td>
+                      <td colSpan={2} className="py-3 px-2 text-right text-slate-400 font-sans">Total Entradas:</td>
+                      <td className="py-3 px-2 text-right text-blue-300 border-r border-slate-800">
+                        {formatCurrency(sheetSummary.totalPurchases)}
+                      </td>
+                      <td colSpan={2} className="py-3 px-2 text-right text-slate-400 font-sans">Total Salidas (CMV):</td>
+                      <td className="py-3 px-2 text-right text-rose-300 border-r border-slate-800">
+                        {formatCurrency(sheetSummary.totalCMV)}
+                      </td>
+                      <td colSpan={2} className="py-3 px-2 text-right text-slate-400 font-sans">Saldo Final:</td>
+                      <td className="py-3 px-2 text-right text-emerald-300">
+                        {formatCurrency(sheetSummary.endingTotal)}
+                      </td>
+                      <td></td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+
+              {/* Nota Explicativa Didáctica de Cátedra (según Imagen 4) */}
+              <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800 text-xs text-slate-400 grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="p-2.5 rounded-lg bg-blue-950/20 border border-blue-900/30 space-y-1">
+                  <strong className="text-blue-300 block">En las ENTRADAS:</strong>
+                  <span>Se detallan las unidades compradas y devoluciones de compras (restando) al precio unitario (costo). Luego se calcula el Total.</span>
+                </div>
+                <div className="p-2.5 rounded-lg bg-rose-950/20 border border-rose-900/30 space-y-1">
+                  <strong className="text-rose-300 block">En las SALIDAS:</strong>
+                  <span>En base al MÉTODO utilizado ({activeFacultySheet.method}), se detallan las unidades vendidas y devoluciones al COSTO correspondiente.</span>
+                </div>
+                <div className="p-2.5 rounded-lg bg-emerald-950/20 border border-emerald-900/30 space-y-1">
+                  <strong className="text-emerald-300 block">El SALDO:</strong>
+                  <span>Demuestra las unidades en STOCK al precio establecido según la valuación vigente tras cada movimiento.</span>
+                </div>
+              </div>
+
+            </div>
+          )}
+
+          {/* VISTA B: OTRAS PLANILLAS DE COSTOS (Genéricas / RT 17) */}
+          {costToolTab === 'generic' && activeGenericSheet && (
+            <div className="space-y-4">
+              <div className="p-4 rounded-2xl bg-gradient-to-r from-slate-900 via-slate-900/90 to-slate-900 border border-slate-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-bold text-white">{activeGenericSheet.title}</h3>
+                  <p className="text-xs text-slate-400 mt-0.5">{activeGenericSheet.description}</p>
+                </div>
+                <div className="font-mono text-right bg-slate-950/80 px-4 py-2.5 rounded-xl border border-slate-800">
+                  <span className="text-[10px] text-slate-400 uppercase font-sans block">Total Costo Determinado</span>
+                  <span className="text-lg font-bold text-cyan-400">{formatCurrency(genericGrandTotal)}</span>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900/70 shadow-xl">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-slate-950 text-slate-400 uppercase font-mono text-[11px] border-b border-slate-800">
+                      <th className="py-3 px-3">Componente / Concepto del Costo</th>
+                      <th className="py-3 px-3 w-28 text-right">Cantidad</th>
+                      <th className="py-3 px-3 w-36 text-right">Costo Unitario ($)</th>
+                      <th className="py-3 px-3 w-36 text-right">Total ($)</th>
+                      <th className="py-3 px-3 w-48 font-sans">Observaciones</th>
+                      <th className="py-3 px-2 w-10 text-center"></th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60 font-mono text-slate-200">
+                    {activeGenericSheet.rows.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} className="py-8 text-center text-slate-500 font-sans">
+                          Sin conceptos de costo cargados. Haz clic en "Agregar Concepto".
+                        </td>
+                      </tr>
+                    ) : (
+                      activeGenericSheet.rows.map((row) => (
+                        <tr key={row.id} className="hover:bg-slate-800/40 transition group">
+                          <td className="py-2 px-2 font-sans">
+                            <input
+                              type="text"
+                              value={row.concept}
+                              onChange={(e) => handleUpdateGenericRow(row.id, 'concept', e.target.value)}
+                              placeholder="Flete, Seguro, Embalaje, etc."
+                              className="w-full px-2 py-1 text-white font-medium rounded bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-cyan-500 text-xs"
+                            />
+                          </td>
+                          <td className="py-2 px-2">
+                            <input
+                              type="number"
+                              step="any"
+                              value={row.quantity}
+                              onChange={(e) => handleUpdateGenericRow(row.id, 'quantity', e.target.value)}
+                              className="w-full px-2 py-1 text-right text-slate-300 rounded bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-cyan-500 text-xs font-bold"
+                            />
+                          </td>
+                          <td className="py-2 px-2">
+                            <input
+                              type="number"
+                              step="any"
+                              value={row.unitCost}
+                              onChange={(e) => handleUpdateGenericRow(row.id, 'unitCost', e.target.value)}
+                              className="w-full px-2 py-1 text-right text-slate-300 rounded bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-cyan-500 text-xs"
+                            />
+                          </td>
+                          <td className="py-2 px-3 text-right font-bold text-cyan-400">
+                            {formatCurrency(row.total)}
+                          </td>
+                          <td className="py-2 px-2 font-sans">
+                            <input
+                              type="text"
+                              value={row.notes || ''}
+                              onChange={(e) => handleUpdateGenericRow(row.id, 'notes', e.target.value)}
+                              placeholder="Observación..."
+                              className="w-full px-2 py-1 text-slate-400 rounded bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-cyan-500 text-[11px]"
+                            />
+                          </td>
+                          <td className="py-2 px-2 text-center">
+                            <button
+                              onClick={() => handleDeleteGenericRow(row.id)}
+                              className="p-1 rounded text-slate-500 hover:text-rose-400 transition"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                  <tfoot className="bg-slate-950 text-white font-bold font-mono border-t-2 border-slate-800 text-xs">
+                    <tr>
+                      <td colSpan={3} className="py-3 px-3 uppercase font-sans text-right">
+                        Costo Total Determinado:
+                      </td>
+                      <td className="py-3 px-3 text-right text-cyan-400 text-sm">
+                        {formatCurrency(genericGrandTotal)}
+                      </td>
+                      <td colSpan={2}></td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+
+              <div className="flex justify-end pt-1">
+                <button
+                  onClick={handleAddGenericRow}
+                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold transition"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Agregar Concepto</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+        </div>
+      )}
+
+      {/* =========================================================================================
+          HERRAMIENTA 3: LIBRO DIARIO MANUAL
           ========================================================================================= */}
       {activePracticeTab === 'journal' && (
         <div className="space-y-4">
           
-          {/* Tarjeta de Control y Resumen de Totales */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 p-4 rounded-2xl bg-slate-900/60 border border-slate-800">
             <div>
               <span className="text-[10px] text-slate-400 uppercase font-mono">Total Sumas al Debe</span>
@@ -529,16 +1504,15 @@ export const PracticeView: React.FC = () => {
                 </div>
               </div>
               <button
-                onClick={() => handleAddJournalRow()}
+                onClick={handleAddJournalRow}
                 className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition shadow-md shadow-indigo-600/20"
               >
                 <Plus className="w-3.5 h-3.5" />
-                <span>Agregar Fila</span>
+                <span>Agregar Partida</span>
               </button>
             </div>
           </div>
 
-          {/* Tabla Editable del Libro Diario */}
           <div className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900/70 shadow-xl">
             <table className="w-full text-left text-xs border-collapse">
               <thead>
@@ -546,79 +1520,67 @@ export const PracticeView: React.FC = () => {
                   <th className="py-3 px-3 w-16 text-center">As. Nº</th>
                   <th className="py-3 px-3 w-32">Fecha</th>
                   <th className="py-3 px-3 w-28">Código</th>
-                  <th className="py-3 px-3 w-48">Cuenta Contable</th>
-                  <th className="py-3 px-3">Detalle / Explicación</th>
+                  <th className="py-3 px-3 w-48 font-sans">Cuenta Contable</th>
+                  <th className="py-3 px-3 font-sans">Detalle / Glosa</th>
                   <th className="py-3 px-3 w-32 text-right">Debe ($)</th>
                   <th className="py-3 px-3 w-32 text-right">Haber ($)</th>
-                  <th className="py-3 px-2 w-12 text-center">Acción</th>
+                  <th className="py-3 px-2 w-10 text-center">Acción</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60 font-mono text-slate-200">
                 {practiceData.journalRows.length === 0 ? (
                   <tr>
                     <td colSpan={8} className="py-8 text-center text-slate-500 font-sans">
-                      No hay filas cargadas. Haz clic en "Agregar Fila" para comenzar tu asiento contable.
+                      No hay asientos cargados. Haz clic en "Agregar Partida" para registrar tu primer asiento contable.
                     </td>
                   </tr>
                 ) : (
                   practiceData.journalRows.map((row) => (
                     <tr key={row.id} className="hover:bg-slate-800/40 transition group">
-                      
-                      {/* Nº de Asiento */}
                       <td className="py-2 px-2 text-center">
                         <input
                           type="number"
                           min="1"
                           value={row.entryNumber}
                           onChange={(e) => handleUpdateJournalRow(row.id, 'entryNumber', e.target.value)}
-                          className="w-12 px-1.5 py-1 text-center font-bold text-indigo-400 rounded-lg bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-indigo-500"
+                          className="w-12 px-1.5 py-1 text-center font-bold text-indigo-400 rounded bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-indigo-500"
                         />
                       </td>
-
-                      {/* Fecha */}
                       <td className="py-2 px-2">
                         <input
                           type="date"
                           value={row.date}
                           onChange={(e) => handleUpdateJournalRow(row.id, 'date', e.target.value)}
-                          className="w-full px-2 py-1 text-slate-300 rounded-lg bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-indigo-500 text-[11px]"
+                          className="w-full px-2 py-1 text-slate-300 rounded bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-indigo-500 text-[11px]"
                         />
                       </td>
-
-                      {/* Código de Cuenta */}
                       <td className="py-2 px-2">
                         <input
                           type="text"
                           placeholder="1.1.01"
                           value={row.accountCode}
                           onChange={(e) => handleUpdateJournalRow(row.id, 'accountCode', e.target.value)}
-                          className="w-full px-2 py-1 text-slate-400 font-semibold rounded-lg bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-indigo-500 text-xs"
+                          className="w-full px-2 py-1 text-slate-400 font-semibold rounded bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-indigo-500 text-xs"
                         />
                       </td>
-
-                      {/* Nombre de la Cuenta */}
                       <td className="py-2 px-2 font-sans">
                         <input
                           type="text"
                           placeholder="Nombre de cuenta..."
                           value={row.accountName}
                           onChange={(e) => handleUpdateJournalRow(row.id, 'accountName', e.target.value)}
-                          className="w-full px-2 py-1 text-white font-medium rounded-lg bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-indigo-500 text-xs"
+                          className="w-full px-2 py-1 text-white font-medium rounded bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-indigo-500 text-xs"
                         />
                       </td>
-
-                      {/* Detalle / Glosa */}
                       <td className="py-2 px-2 font-sans">
                         <input
                           type="text"
-                          placeholder="Concepto del movimiento..."
+                          placeholder="Glosa del movimiento..."
                           value={row.detail}
                           onChange={(e) => handleUpdateJournalRow(row.id, 'detail', e.target.value)}
-                          className="w-full px-2 py-1 text-slate-300 rounded-lg bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-indigo-500 text-xs"
+                          className="w-full px-2 py-1 text-slate-300 rounded bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-indigo-500 text-xs"
                         />
                       </td>
-
-                      {/* Debe */}
                       <td className="py-2 px-2">
                         <input
                           type="number"
@@ -627,11 +1589,9 @@ export const PracticeView: React.FC = () => {
                           value={row.debit || ''}
                           onChange={(e) => handleUpdateJournalRow(row.id, 'debit', e.target.value)}
                           placeholder="0.00"
-                          className="w-full px-2 py-1 text-right font-bold text-blue-300 rounded-lg bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-blue-500 text-xs"
+                          className="w-full px-2 py-1 text-right font-bold text-blue-300 rounded bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-blue-500 text-xs"
                         />
                       </td>
-
-                      {/* Haber */}
                       <td className="py-2 px-2">
                         <input
                           type="number"
@@ -640,27 +1600,21 @@ export const PracticeView: React.FC = () => {
                           value={row.credit || ''}
                           onChange={(e) => handleUpdateJournalRow(row.id, 'credit', e.target.value)}
                           placeholder="0.00"
-                          className="w-full px-2 py-1 text-right font-bold text-emerald-300 rounded-lg bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-emerald-500 text-xs"
+                          className="w-full px-2 py-1 text-right font-bold text-emerald-300 rounded bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-emerald-500 text-xs"
                         />
                       </td>
-
-                      {/* Eliminar Fila */}
                       <td className="py-2 px-2 text-center">
                         <button
                           onClick={() => handleDeleteJournalRow(row.id)}
-                          className="p-1 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-950/30 transition opacity-80 group-hover:opacity-100"
-                          title="Eliminar fila"
+                          className="p-1 rounded text-slate-500 hover:text-rose-400 transition"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </td>
-
                     </tr>
                   ))
                 )}
               </tbody>
-
-              {/* Fila de Totales */}
               <tfoot className="bg-slate-950 text-white font-bold font-mono border-t-2 border-slate-800 text-xs">
                 <tr>
                   <td colSpan={5} className="py-3 px-3 uppercase font-sans text-right">
@@ -678,430 +1632,12 @@ export const PracticeView: React.FC = () => {
             </table>
           </div>
 
-          <div className="flex items-center justify-between text-xs text-slate-400 pt-1">
-            <span className="flex items-center gap-1.5">
-              <Info className="w-4 h-4 text-indigo-400" />
-              Puedes editar directamente cualquier celda. Todos los cálculos se actualizan de forma instantánea.
-            </span>
-            <button
-              onClick={() => handleAddJournalRow()}
-              className="text-indigo-400 hover:text-indigo-300 font-semibold flex items-center gap-1"
-            >
-              <Plus className="w-3.5 h-3.5" /> Agregar otra partida
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* =========================================================================================
-          VISTA 2: LIBRO MAYOR MANUAL
-          ========================================================================================= */}
-      {activePracticeTab === 'ledger' && (
-        <div className="space-y-4">
-          
-          {/* Barra de Selección y Creación de Cuentas */}
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 bg-slate-900/60 p-4 rounded-2xl border border-slate-800">
-            <div className="flex items-center gap-3">
-              <div className="p-2 rounded-xl bg-indigo-600/10 text-indigo-400">
-                <GitCommitVertical className="w-5 h-5" />
-              </div>
-              <div>
-                <label className="block text-[11px] text-slate-400 uppercase font-mono">Cuenta en Mayor</label>
-                <select
-                  value={selectedLedgerAccountId}
-                  onChange={(e) => setSelectedLedgerAccountId(e.target.value)}
-                  className="mt-0.5 px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-xs font-bold text-white focus:outline-none focus:border-indigo-500"
-                >
-                  {practiceData.ledgerAccounts.map(acc => (
-                    <option key={acc.id} value={acc.id}>
-                      {acc.accountCode} - {acc.accountName} ({acc.movements.length} movs.)
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handleAddLedgerAccount}
-                className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>Nueva Cuenta</span>
-              </button>
-
-              {activeLedgerAccount && (
-                <button
-                  onClick={() => handleDeleteLedgerAccount(activeLedgerAccount.id)}
-                  className="p-2 rounded-xl bg-slate-800 hover:bg-rose-950/40 text-slate-400 hover:text-rose-400 transition border border-slate-700"
-                  title="Eliminar cuenta actual"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* Tarjeta de Resumen de la Cuenta */}
-          {activeLedgerAccount && (
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-4 rounded-2xl bg-gradient-to-r from-slate-900 via-slate-900/90 to-slate-900 border border-slate-800 font-mono text-xs">
-              <div>
-                <span className="text-[10px] text-slate-400 uppercase font-sans">Total Debe Acumulado</span>
-                <div className="text-base font-bold text-blue-300 mt-0.5">
-                  {formatCurrency(ledgerAccountSummary.totalDebit)}
-                </div>
-              </div>
-              <div>
-                <span className="text-[10px] text-slate-400 uppercase font-sans">Total Haber Acumulado</span>
-                <div className="text-base font-bold text-emerald-300 mt-0.5">
-                  {formatCurrency(ledgerAccountSummary.totalCredit)}
-                </div>
-              </div>
-              <div>
-                <span className="text-[10px] text-slate-400 uppercase font-sans">Saldo de la Cuenta</span>
-                <div className="text-base font-bold text-white mt-0.5">
-                  {formatCurrency(ledgerAccountSummary.balance)}
-                </div>
-              </div>
-              <div>
-                <span className="text-[10px] text-slate-400 uppercase font-sans">Naturaleza del Saldo</span>
-                <div className={`text-sm font-bold mt-0.5 ${
-                  ledgerAccountSummary.nature === 'DEUDOR' 
-                    ? 'text-blue-400' 
-                    : ledgerAccountSummary.nature === 'ACREEDOR' 
-                      ? 'text-emerald-400' 
-                      : 'text-slate-400'
-                }`}>
-                  {ledgerAccountSummary.nature}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Tabla de Movimientos de la Cuenta */}
-          <div className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900/70 shadow-xl">
-            <table className="w-full text-left text-xs border-collapse">
-              <thead>
-                <tr className="bg-slate-950 text-slate-400 uppercase font-mono text-[11px] border-b border-slate-800">
-                  <th className="py-3 px-3 w-32">Fecha</th>
-                  <th className="py-3 px-3 w-36">Referencia Asiento</th>
-                  <th className="py-3 px-3">Detalle del Movimiento</th>
-                  <th className="py-3 px-3 w-32 text-right">Debe ($)</th>
-                  <th className="py-3 px-3 w-32 text-right">Haber ($)</th>
-                  <th className="py-3 px-3 w-36 text-right">Saldo Acumulado</th>
-                  <th className="py-3 px-2 w-12 text-center">Acción</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800/60 font-mono text-slate-200">
-                {calculatedMovements.length === 0 ? (
-                  <tr>
-                    <td colSpan={7} className="py-8 text-center text-slate-500 font-sans">
-                      No hay movimientos registrados para esta cuenta. Haz clic en "Agregar Movimiento".
-                    </td>
-                  </tr>
-                ) : (
-                  calculatedMovements.map((mov) => (
-                    <tr key={mov.id} className="hover:bg-slate-800/40 transition group">
-                      
-                      {/* Fecha */}
-                      <td className="py-2 px-2">
-                        <input
-                          type="date"
-                          value={mov.date}
-                          onChange={(e) => handleUpdateLedgerMovement(mov.id, 'date', e.target.value)}
-                          className="w-full px-2 py-1 text-slate-300 rounded-lg bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-indigo-500 text-[11px]"
-                        />
-                      </td>
-
-                      {/* Referencia Asiento */}
-                      <td className="py-2 px-2">
-                        <input
-                          type="text"
-                          placeholder="Asiento Nº 1"
-                          value={mov.entryRef}
-                          onChange={(e) => handleUpdateLedgerMovement(mov.id, 'entryRef', e.target.value)}
-                          className="w-full px-2 py-1 text-indigo-300 font-semibold rounded-lg bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-indigo-500 text-xs"
-                        />
-                      </td>
-
-                      {/* Detalle */}
-                      <td className="py-2 px-2 font-sans">
-                        <input
-                          type="text"
-                          placeholder="Concepto o comprobante..."
-                          value={mov.detail}
-                          onChange={(e) => handleUpdateLedgerMovement(mov.id, 'detail', e.target.value)}
-                          className="w-full px-2 py-1 text-white rounded-lg bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-indigo-500 text-xs"
-                        />
-                      </td>
-
-                      {/* Debe */}
-                      <td className="py-2 px-2">
-                        <input
-                          type="number"
-                          min="0"
-                          step="any"
-                          value={mov.debit || ''}
-                          onChange={(e) => handleUpdateLedgerMovement(mov.id, 'debit', e.target.value)}
-                          placeholder="0.00"
-                          className="w-full px-2 py-1 text-right font-bold text-blue-300 rounded-lg bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-blue-500 text-xs"
-                        />
-                      </td>
-
-                      {/* Haber */}
-                      <td className="py-2 px-2">
-                        <input
-                          type="number"
-                          min="0"
-                          step="any"
-                          value={mov.credit || ''}
-                          onChange={(e) => handleUpdateLedgerMovement(mov.id, 'credit', e.target.value)}
-                          placeholder="0.00"
-                          className="w-full px-2 py-1 text-right font-bold text-emerald-300 rounded-lg bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-emerald-500 text-xs"
-                        />
-                      </td>
-
-                      {/* Saldo Acumulado (calculado automáticamente) */}
-                      <td className="py-2 px-3 text-right font-bold text-white">
-                        <span>{formatCurrency(mov.runningBalance)}</span>
-                        <span className={`text-[10px] ml-1 font-sans ${
-                          mov.balanceNature === 'DEUDOR' ? 'text-blue-400' : mov.balanceNature === 'ACREEDOR' ? 'text-emerald-400' : 'text-slate-500'
-                        }`}>
-                          ({mov.balanceNature[0]})
-                        </span>
-                      </td>
-
-                      {/* Eliminar Movimiento */}
-                      <td className="py-2 px-2 text-center">
-                        <button
-                          onClick={() => handleDeleteLedgerMovement(mov.id)}
-                          className="p-1 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-950/30 transition opacity-80 group-hover:opacity-100"
-                          title="Eliminar movimiento"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </td>
-
-                    </tr>
-                  ))
-                )}
-              </tbody>
-
-              <tfoot className="bg-slate-950 text-white font-bold font-mono border-t-2 border-slate-800 text-xs">
-                <tr>
-                  <td colSpan={3} className="py-3 px-3 uppercase font-sans text-right">
-                    Totales de la Cuenta:
-                  </td>
-                  <td className="py-3 px-2 text-right text-blue-300">
-                    {formatCurrency(ledgerAccountSummary.totalDebit)}
-                  </td>
-                  <td className="py-3 px-2 text-right text-emerald-300">
-                    {formatCurrency(ledgerAccountSummary.totalCredit)}
-                  </td>
-                  <td className="py-3 px-3 text-right text-indigo-300">
-                    Saldo {ledgerAccountSummary.nature}: {formatCurrency(ledgerAccountSummary.balance)}
-                  </td>
-                  <td></td>
-                </tr>
-              </tfoot>
-            </table>
-          </div>
-
           <div className="flex justify-end pt-1">
             <button
-              onClick={handleAddLedgerMovement}
-              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition shadow-md shadow-indigo-600/20"
+              onClick={handleAddJournalRow}
+              className="text-indigo-400 hover:text-indigo-300 font-semibold text-xs flex items-center gap-1"
             >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Agregar Movimiento a esta Cuenta</span>
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* =========================================================================================
-          VISTA 3: PLANILLAS DE COSTOS
-          ========================================================================================= */}
-      {activePracticeTab === 'costs' && (
-        <div className="space-y-4">
-          
-          {/* Selector y Creación de Planillas de Costos */}
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 bg-slate-900/60 p-4 rounded-2xl border border-slate-800">
-            <div className="flex items-center gap-3">
-              <div className="p-2 rounded-xl bg-cyan-600/10 text-cyan-400">
-                <Calculator className="w-5 h-5" />
-              </div>
-              <div>
-                <label className="block text-[11px] text-slate-400 uppercase font-mono">Planilla de Costos Activa</label>
-                <select
-                  value={selectedCostSheetId}
-                  onChange={(e) => setSelectedCostSheetId(e.target.value)}
-                  className="mt-0.5 px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-xs font-bold text-white focus:outline-none focus:border-cyan-500 max-w-sm truncate"
-                >
-                  {practiceData.costSheets.map(s => (
-                    <option key={s.id} value={s.id}>
-                      {s.title}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handleAddCostSheet}
-                className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold transition"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>Nueva Planilla</span>
-              </button>
-
-              {activeCostSheet && (
-                <button
-                  onClick={() => handleDeleteCostSheet(activeCostSheet.id)}
-                  className="p-2 rounded-xl bg-slate-800 hover:bg-rose-950/40 text-slate-400 hover:text-rose-400 transition border border-slate-700"
-                  title="Eliminar planilla actual"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* Descripción y Total General */}
-          {activeCostSheet && (
-            <div className="p-4 rounded-2xl bg-gradient-to-r from-slate-900 via-slate-900/90 to-slate-900 border border-slate-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-              <div>
-                <h3 className="text-sm font-bold text-white">{activeCostSheet.title}</h3>
-                <p className="text-xs text-slate-400 mt-0.5">{activeCostSheet.description || 'Planilla contable de costeo y determinación de importes.'}</p>
-              </div>
-              <div className="font-mono text-right bg-slate-950/80 px-4 py-2.5 rounded-xl border border-slate-800">
-                <span className="text-[10px] text-slate-400 uppercase font-sans block">Total Costo Determinado</span>
-                <span className="text-lg font-bold text-cyan-400">{formatCurrency(costSheetGrandTotal)}</span>
-              </div>
-            </div>
-          )}
-
-          {/* Tabla Editable de Costos */}
-          <div className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900/70 shadow-xl">
-            <table className="w-full text-left text-xs border-collapse">
-              <thead>
-                <tr className="bg-slate-950 text-slate-400 uppercase font-mono text-[11px] border-b border-slate-800">
-                  <th className="py-3 px-3">Concepto / Componente del Costo</th>
-                  <th className="py-3 px-3 w-28 text-right">Cantidad</th>
-                  <th className="py-3 px-3 w-36 text-right">Costo Unitario ($)</th>
-                  <th className="py-3 px-3 w-36 text-right">Importe Parcial / Total ($)</th>
-                  <th className="py-3 px-3 w-48 font-sans">Observaciones / Nota</th>
-                  <th className="py-3 px-2 w-12 text-center">Acción</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800/60 font-mono text-slate-200">
-                {!activeCostSheet || activeCostSheet.rows.length === 0 ? (
-                  <tr>
-                    <td colSpan={6} className="py-8 text-center text-slate-500 font-sans">
-                      No hay conceptos en esta planilla. Haz clic en "Agregar Concepto".
-                    </td>
-                  </tr>
-                ) : (
-                  activeCostSheet.rows.map((row) => (
-                    <tr key={row.id} className="hover:bg-slate-800/40 transition group">
-                      
-                      {/* Concepto */}
-                      <td className="py-2 px-2 font-sans">
-                        <input
-                          type="text"
-                          placeholder="Materia prima, flete, arancel, etc."
-                          value={row.concept}
-                          onChange={(e) => handleUpdateCostRow(row.id, 'concept', e.target.value)}
-                          className="w-full px-2 py-1 text-white font-medium rounded-lg bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-cyan-500 text-xs"
-                        />
-                      </td>
-
-                      {/* Cantidad */}
-                      <td className="py-2 px-2">
-                        <input
-                          type="number"
-                          step="any"
-                          value={row.quantity}
-                          onChange={(e) => handleUpdateCostRow(row.id, 'quantity', e.target.value)}
-                          className="w-full px-2 py-1 text-right text-slate-300 rounded-lg bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-cyan-500 text-xs font-bold"
-                        />
-                      </td>
-
-                      {/* Costo Unitario */}
-                      <td className="py-2 px-2">
-                        <input
-                          type="number"
-                          step="any"
-                          value={row.unitCost}
-                          onChange={(e) => handleUpdateCostRow(row.id, 'unitCost', e.target.value)}
-                          className="w-full px-2 py-1 text-right text-slate-300 rounded-lg bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-cyan-500 text-xs"
-                        />
-                      </td>
-
-                      {/* Importe Parcial / Total (calculado o editable) */}
-                      <td className="py-2 px-2">
-                        <input
-                          type="number"
-                          step="any"
-                          value={row.total}
-                          onChange={(e) => handleUpdateCostRow(row.id, 'total', e.target.value)}
-                          className="w-full px-2 py-1 text-right font-bold text-cyan-300 rounded-lg bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-cyan-500 text-xs"
-                        />
-                      </td>
-
-                      {/* Observaciones */}
-                      <td className="py-2 px-2 font-sans">
-                        <input
-                          type="text"
-                          placeholder="Nota contable..."
-                          value={row.notes || ''}
-                          onChange={(e) => handleUpdateCostRow(row.id, 'notes', e.target.value)}
-                          className="w-full px-2 py-1 text-slate-400 rounded-lg bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-cyan-500 text-[11px]"
-                        />
-                      </td>
-
-                      {/* Eliminar Fila */}
-                      <td className="py-2 px-2 text-center">
-                        <button
-                          onClick={() => handleDeleteCostRow(row.id)}
-                          className="p-1 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-950/30 transition opacity-80 group-hover:opacity-100"
-                          title="Eliminar concepto"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </td>
-
-                    </tr>
-                  ))
-                )}
-              </tbody>
-
-              <tfoot className="bg-slate-950 text-white font-bold font-mono border-t-2 border-slate-800 text-xs">
-                <tr>
-                  <td colSpan={3} className="py-3 px-3 uppercase font-sans text-right">
-                    Costo Total Acumulado:
-                  </td>
-                  <td className="py-3 px-2 text-right text-cyan-400 text-sm">
-                    {formatCurrency(costSheetGrandTotal)}
-                  </td>
-                  <td colSpan={2}></td>
-                </tr>
-              </tfoot>
-            </table>
-          </div>
-
-          <div className="flex justify-between items-center pt-1 text-xs text-slate-400">
-            <span className="flex items-center gap-1.5">
-              <Sparkles className="w-4 h-4 text-cyan-400" />
-              Al modificar Cantidad o Costo Unitario, el importe se calcula automáticamente (Cantidad × Costo Unitario).
-            </span>
-            <button
-              onClick={handleAddCostRow}
-              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold transition shadow-md shadow-cyan-600/20"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Agregar Concepto</span>
+              <Plus className="w-3.5 h-3.5" /> Agregar partida al asiento
             </button>
           </div>
         </div>

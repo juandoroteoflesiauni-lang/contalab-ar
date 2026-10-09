@@ -4,6 +4,8 @@ import { calculateProductInventory, compareAllMethods } from '../core/inventoryE
 import { generateJournalEntries } from '../core/journalEngine';
 import { generateLedger, generateTrialBalance } from '../core/ledgerEngine';
 import { DEFAULT_ACCOUNTS } from '../data/defaultAccounts';
+import { FacultyInventoryRow } from '../types/practice';
+import { recalculateInventorySheet } from '../utils/inventorySheetCalculator';
 
 describe('Motor de Valuación de Inventarios - Caso de Prueba Contable', () => {
   const sampleProduct: Product = {
@@ -229,5 +231,74 @@ describe('Motor de Valuación de Inventarios - Caso de Prueba Contable', () => {
     expect(state.endingUnits).toBe(95);
     expect(state.endingCost).toBe(47500); // 95 * 500
   });
+
+  it('10. Planilla al Costo de Cátedra: Recálculo en 3 bloques (Entrada, Salida, Saldo)', () => {
+    const rows: FacultyInventoryRow[] = [
+      {
+        id: 'r1',
+        date: '2026-03-01',
+        concept: 'Existencia inicial',
+        type: 'INICIAL',
+        inUnits: 100,
+        inUnitPrice: 500,
+        inTotal: 50000,
+        outUnits: 0,
+        outUnitPrice: 0,
+        outTotal: 0,
+        balanceUnits: 0,
+        balanceUnitPrice: 0,
+        balanceTotal: 0
+      },
+      {
+        id: 'r2',
+        date: '2026-03-05',
+        concept: 'Compra s/Factura A',
+        type: 'COMPRA',
+        inUnits: 150,
+        inUnitPrice: 620,
+        inTotal: 93000,
+        outUnits: 0,
+        outUnitPrice: 0,
+        outTotal: 0,
+        balanceUnits: 0,
+        balanceUnitPrice: 0,
+        balanceTotal: 0
+      },
+      {
+        id: 'r3',
+        date: '2026-03-10',
+        concept: 'Venta s/Factura B',
+        type: 'VENTA',
+        inUnits: 0,
+        inUnitPrice: 0,
+        inTotal: 0,
+        outUnits: 120,
+        outUnitPrice: 0,
+        outTotal: 0,
+        balanceUnits: 0,
+        balanceUnitPrice: 0,
+        balanceTotal: 0
+      }
+    ];
+
+    // Prueba en PEPS: la venta de 120 consume 100 @ 500 ($50.000) + 20 @ 620 ($12.400) = $62.400
+    const pepsResult = recalculateInventorySheet(rows, 'PEPS');
+    expect(pepsResult[2].outTotal).toBe(62400);
+    expect(pepsResult[2].balanceUnits).toBe(130);
+    expect(pepsResult[2].balanceTotal).toBe(80600);
+
+    // Prueba en UEPS: la venta de 120 consume 120 @ 620 = $74.400
+    const uepsResult = recalculateInventorySheet(rows, 'UEPS');
+    expect(uepsResult[2].outTotal).toBe(74400);
+    expect(uepsResult[2].balanceUnits).toBe(130);
+    expect(uepsResult[2].balanceTotal).toBe(68600);
+
+    // Prueba en PPP: saldo previo = (50.000 + 93.000)/250 = 572. Venta 120 * 572 = 68.640
+    const pppResult = recalculateInventorySheet(rows, 'PPP');
+    expect(pppResult[2].outTotal).toBe(68640);
+    expect(pppResult[2].balanceUnits).toBe(130);
+    expect(pppResult[2].balanceTotal).toBe(74360);
+  });
 });
+
 

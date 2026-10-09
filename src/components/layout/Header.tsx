@@ -8,7 +8,9 @@ import {
   FolderGit2, 
   CheckCircle2, 
   AlertTriangle,
-  Sparkles
+  Sparkles,
+  PanelLeftClose,
+  PanelLeftOpen
 } from 'lucide-react';
 import { useAccounting } from '../../context/AccountingContext';
 import { ValuationMethod } from '../../types/accounting';
@@ -19,13 +21,17 @@ interface HeaderProps {
   onOpenExport: () => void;
   onOpenStudyMode: () => void;
   onOpenTests: () => void;
+  isSidebarCollapsed?: boolean;
+  onToggleSidebarCollapse?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
   onOpenExercises,
   onOpenExport,
   onOpenStudyMode,
-  onOpenTests
+  onOpenTests,
+  isSidebarCollapsed,
+  onToggleSidebarCollapse
 }) => {
   const { 
     activeExercise, 
@@ -48,6 +54,15 @@ export const Header: React.FC<HeaderProps> = ({
         
         {/* Lado Izquierdo: Info de Ejercicio y Empresa */}
         <div className="flex items-center gap-3">
+          {onToggleSidebarCollapse && (
+            <button
+              onClick={onToggleSidebarCollapse}
+              className="hidden lg:flex items-center justify-center p-2 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white transition border border-slate-700/60"
+              title={isSidebarCollapsed ? "Expandir barra lateral" : "Contraer barra lateral (aprovechar pantalla completa)"}
+            >
+              {isSidebarCollapsed ? <PanelLeftOpen className="w-4 h-4 text-cyan-400" /> : <PanelLeftClose className="w-4 h-4" />}
+            </button>
+          )}
           <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 to-cyan-500 flex items-center justify-center shadow-lg shadow-indigo-500/20 text-white font-bold">
             <BookOpen className="w-5 h-5" />
           </div>

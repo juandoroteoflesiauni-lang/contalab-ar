@@ -51,13 +51,15 @@ interface AccountingContextType {
 
 const AccountingContext = createContext<AccountingContextType | undefined>(undefined);
 
-const STORAGE_KEY = 'contalab_ar_exercises_v1';
-const ACTIVE_EX_KEY = 'contalab_ar_active_ex_id_v1';
+const STORAGE_KEY = 'contalab_ar_exercises_v2';
+const ACTIVE_EX_KEY = 'contalab_ar_active_ex_id_v2';
 
 export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  // 1. Carga inicial desde localStorage
+  // 1. Carga inicial desde localStorage (limpiando versiones previas con datos demo)
   const [exercises, setExercises] = useState<AccountingExercise[]>(() => {
     try {
+      localStorage.removeItem('contalab_ar_exercises_v1');
+      localStorage.removeItem('contalab_ar_active_ex_id_v1');
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);

@@ -1,4 +1,81 @@
-// Tipos para el módulo de Práctica Contable Manual
+// Tipos para el módulo de Práctica Contable (Metodología Universitaria SIC)
+
+export type TAccountCategory = 'ACTIVO' | 'PASIVO' | 'PATRIMONIO_NETO' | 'RESULTADOS';
+
+export interface TMovement {
+  id: string;
+  amount: number;
+  ref?: string; // ej: "(1)" o "As. 1"
+}
+
+export interface TAccount {
+  id: string;
+  category: TAccountCategory;
+  name: string;
+  code?: string;
+  debits: TMovement[];
+  credits: TMovement[];
+}
+
+export type InventoryCostMethod = 'PEPS' | 'UEPS' | 'PPP' | 'ESPECIFICA';
+
+export type InventoryMovementType = 
+  | 'INICIAL' 
+  | 'COMPRA' 
+  | 'VENTA' 
+  | 'DEV_COMPRA' 
+  | 'DEV_VENTA' 
+  | 'AJUSTE';
+
+export interface FacultyInventoryRow {
+  id: string;
+  date: string;
+  concept: string;
+  type: InventoryMovementType;
+  
+  // Entrada
+  inUnits: number;
+  inUnitPrice: number;
+  inTotal: number;
+
+  // Salida
+  outUnits: number;
+  outUnitPrice: number;
+  outTotal: number;
+
+  // Saldo
+  balanceUnits: number;
+  balanceUnitPrice: number;
+  balanceTotal: number;
+
+  notes?: string;
+  costLayersConsumed?: { units: number; unitCost: number; subtotal: number }[];
+}
+
+export interface FacultyInventorySheet {
+  id: string;
+  title: string;
+  productName: string;
+  unitOfMeasure: string;
+  method: InventoryCostMethod;
+  rows: FacultyInventoryRow[];
+}
+
+export interface GenericCostRow {
+  id: string;
+  concept: string;
+  quantity: number;
+  unitCost: number;
+  total: number;
+  notes?: string;
+}
+
+export interface GenericCostSheet {
+  id: string;
+  title: string;
+  description?: string;
+  rows: GenericCostRow[];
+}
 
 export interface ManualJournalRow {
   id: string;
@@ -11,40 +88,9 @@ export interface ManualJournalRow {
   credit: number;
 }
 
-export interface ManualLedgerMovement {
-  id: string;
-  date: string;
-  detail: string;
-  entryRef: string; // ej: "Asiento Nº 1"
-  debit: number;
-  credit: number;
-}
-
-export interface ManualLedgerAccount {
-  id: string;
-  accountCode: string;
-  accountName: string;
-  movements: ManualLedgerMovement[];
-}
-
-export interface CostSheetRow {
-  id: string;
-  concept: string;
-  quantity: number;
-  unitCost: number;
-  total: number; // cantidad * unitCost o valor directo
-  notes?: string;
-}
-
-export interface CostSheet {
-  id: string;
-  title: string;
-  description: string;
-  rows: CostSheetRow[];
-}
-
 export interface PracticeData {
   journalRows: ManualJournalRow[];
-  ledgerAccounts: ManualLedgerAccount[];
-  costSheets: CostSheet[];
+  tAccounts: TAccount[];
+  inventorySheets: FacultyInventorySheet[];
+  genericCostSheets: GenericCostSheet[];
 }

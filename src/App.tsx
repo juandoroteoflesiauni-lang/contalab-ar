@@ -23,6 +23,23 @@ const MainApp: React.FC = () => {
   const [isExercisesModalOpen, setIsExercisesModalOpen] = useState(false);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [isNewOpModalExternalOpen, setIsNewOpModalExternalOpen] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem('contalab_sidebar_collapsed') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const handleToggleSidebarCollapse = () => {
+    setIsSidebarCollapsed(prev => {
+      const next = !prev;
+      try {
+        localStorage.setItem('contalab_sidebar_collapsed', String(next));
+      } catch {}
+      return next;
+    });
+  };
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-indigo-500 selection:text-white">
@@ -44,20 +61,24 @@ const MainApp: React.FC = () => {
         onOpenExport={() => setIsExportModalOpen(true)}
         onOpenStudyMode={() => setActiveTab('studyMode')}
         onOpenTests={() => setActiveTab('tests')}
+        isSidebarCollapsed={isSidebarCollapsed}
+        onToggleSidebarCollapse={handleToggleSidebarCollapse}
       />
 
-      {/* Contenedor con Sidebar y Vista Principal */}
-      <div className="flex-1 flex max-w-7xl w-full mx-auto">
+      {/* Contenedor con Sidebar y Vista Principal adaptado al 100% del monitor */}
+      <div className="flex-1 flex w-full min-w-0">
         {/* Barra Lateral de Navegación */}
         <Sidebar
           activeTab={activeTab}
           setActiveTab={setActiveTab}
           isMobileOpen={isMobileMenuOpen}
           setIsMobileOpen={setIsMobileMenuOpen}
+          isCollapsed={isSidebarCollapsed}
+          onToggleCollapse={handleToggleSidebarCollapse}
         />
 
-        {/* Área de Contenido Principal */}
-        <main className="flex-1 p-4 lg:p-6 overflow-x-hidden min-h-[calc(100vh-61px)]">
+        {/* Área de Contenido Principal a pantalla completa */}
+        <main className="flex-1 p-3 md:p-5 lg:p-6 w-full min-w-0 overflow-x-hidden min-h-[calc(100vh-61px)]">
           {activeTab === 'dashboard' && (
             <DashboardView
               onNavigateTab={(tab) => setActiveTab(tab)}
