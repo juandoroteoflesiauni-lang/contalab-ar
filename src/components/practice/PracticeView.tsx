@@ -34,6 +34,8 @@ import {
   GenericCostSheet,
   GenericCostRow,
   ManualJournalRow,
+  ManualJournalEntry,
+  ManualJournalLine,
   PracticeData 
 } from '../../types/practice';
 import { DEFAULT_PRACTICE_DATA } from '../../data/defaultPracticeData';
@@ -57,6 +59,34 @@ export const PracticeView: React.FC = () => {
       if (saved) {
         const parsed = JSON.parse(saved);
         if (parsed.tAccounts && parsed.inventorySheets) {
+          // Migración transparente de journalRows a journalEntries agrupadas
+          if (!parsed.journalEntries) {
+            if (Array.isArray(parsed.journalRows) && parsed.journalRows.length > 0) {
+              const map = new Map<number, ManualJournalEntry>();
+              for (const r of parsed.journalRows) {
+                const eNum = r.entryNumber || 1;
+                if (!map.has(eNum)) {
+                  map.set(eNum, {
+                    id: generateId('pj_entry'),
+                    entryNumber: eNum,
+                    date: r.date || new Date().toISOString().slice(0, 10),
+                    lines: []
+                  });
+                }
+                const entry = map.get(eNum)!;
+                entry.lines.push({
+                  id: r.id || generateId('pj_line'),
+                  accountName: r.accountName || '',
+                  detail: r.detail || '',
+                  debit: Number(r.debit) || 0,
+                  credit: Number(r.credit) || 0
+                });
+              }
+              parsed.journalEntries = Array.from(map.values());
+            } else {
+              parsed.journalEntries = [];
+            }
+          }
           return parsed;
         }
       }
@@ -397,26 +427,85 @@ export const PracticeView: React.FC = () => {
   }, [activeGenericSheet]);
 
   /* =========================================================================================
-     4. LIBRO DIARIO MANUAL
+     4. LIBRO DIARIO MANUAL (AGRUPADO POR ASIENTO Y FECHA COMPARTIDA)
      ========================================================================================= */
   const journalTotals = useMemo(() => {
-    const totalDebit = round2(practiceData.journalRows.reduce((sum, r) => sum + (Number(r.debit) || 0), 0));
-    const totalCredit = round2(practiceData.journalRows.reduce((sum, r) => sum + (Number(r.credit) || 0), 0));
-    const difference = round2(Math.abs(totalDebit - totalCredit));
-    const isBalanced = difference === 0 && practiceData.journalRows.length > 0;
-    return { totalDebit, totalCredit, difference, isBalanced };
-  }, [practiceData.journalRows]);
+    const entries = practiceData.journalEntries || [];
+    let totalDebit = 0;
+    let totalCredit = 0;
+    let totalLinesCount = 0;
 
-  const handleAddJournalRow = () => {
-    const nextEntry = practiceData.journalRows.length > 0 
-      ? Math.max(...practiceData.journalRows.map(r => r.entryNumber || 1)) + 1 
+    entries.forEach(entry => {
+      entry.lines.forEach(l => {
+        totalDebit += Number(l.debit) || 0;
+        totalCredit += Number(l.credit) || 0;
+        totalLinesCount++;
+      });
+    });
+
+    totalDebit = round2(totalDebit);
+    totalCredit = round2(totalCredit);
+    const difference = round2(Math.abs(totalDebit - totalCredit));
+    const isBalanced = difference === 0 && totalLinesCount > 0;
+    return { 
+      totalDebit, 
+      totalCredit, 
+      difference, 
+      isBalanced, 
+      entriesCount: entries.length, 
+      linesCount: totalLinesCount 
+    };
+  }, [practiceData.journalEntries]);
+
+  // Crear un nuevo asiento con fecha independiente y líneas iniciales
+  const handleAddNewEntry = () => {
+    const entries = practiceData.journalEntries || [];
+    const nextEntry = entries.length > 0 
+      ? Math.max(...entries.map(e => e.entryNumber || 1)) + 1 
       : 1;
 
-    const newRow: ManualJournalRow = {
-      id: generateId('pj_row'),
+    const newEntry: ManualJournalEntry = {
+      id: generateId('pj_entry'),
       entryNumber: nextEntry,
       date: new Date().toISOString().slice(0, 10),
-      accountCode: '',
+      lines: [
+        {
+          id: generateId('pj_line'),
+          accountName: '',
+          detail: '',
+          debit: 0,
+          credit: 0
+        },
+        {
+          id: generateId('pj_line'),
+          accountName: '',
+          detail: '',
+          debit: 0,
+          credit: 0
+        }
+      ]
+    };
+
+    setPracticeData(prev => ({
+      ...prev,
+      journalEntries: [...(prev.journalEntries || []), newEntry]
+    }));
+  };
+
+  // Modificar la fecha única compartida de un asiento específico (NO altera ningún otro asiento)
+  const handleUpdateEntryDate = (entryId: string, newDate: string) => {
+    setPracticeData(prev => ({
+      ...prev,
+      journalEntries: (prev.journalEntries || []).map(entry => 
+        entry.id === entryId ? { ...entry, date: newDate } : entry
+      )
+    }));
+  };
+
+  // Agregar una línea contable adicional al mismo asiento
+  const handleAddLineToEntry = (entryId: string) => {
+    const newLine: ManualJournalLine = {
+      id: generateId('pj_line'),
       accountName: '',
       detail: '',
       debit: 0,
@@ -425,24 +514,54 @@ export const PracticeView: React.FC = () => {
 
     setPracticeData(prev => ({
       ...prev,
-      journalRows: [...prev.journalRows, newRow]
-    }));
-  };
-
-  const handleUpdateJournalRow = (id: string, field: keyof ManualJournalRow, value: any) => {
-    setPracticeData(prev => ({
-      ...prev,
-      journalRows: prev.journalRows.map(row => 
-        row.id === id ? { ...row, [field]: (field === 'debit' || field === 'credit' || field === 'entryNumber') ? Number(value) || 0 : value } : row
+      journalEntries: (prev.journalEntries || []).map(entry => 
+        entry.id === entryId ? { ...entry, lines: [...entry.lines, newLine] } : entry
       )
     }));
   };
 
-  const handleDeleteJournalRow = (id: string) => {
+  // Actualizar un campo de una línea específica dentro de un asiento
+  const handleUpdateEntryLine = (entryId: string, lineId: string, field: keyof ManualJournalLine, value: any) => {
     setPracticeData(prev => ({
       ...prev,
-      journalRows: prev.journalRows.filter(r => r.id !== id)
+      journalEntries: (prev.journalEntries || []).map(entry => {
+        if (entry.id !== entryId) return entry;
+        return {
+          ...entry,
+          lines: entry.lines.map(line => {
+            if (line.id !== lineId) return line;
+            return {
+              ...line,
+              [field]: (field === 'debit' || field === 'credit') ? Number(value) || 0 : value
+            };
+          })
+        };
+      })
     }));
+  };
+
+  // Eliminar una línea contable de un asiento
+  const handleDeleteEntryLine = (entryId: string, lineId: string) => {
+    setPracticeData(prev => ({
+      ...prev,
+      journalEntries: (prev.journalEntries || []).map(entry => {
+        if (entry.id !== entryId) return entry;
+        return {
+          ...entry,
+          lines: entry.lines.filter(line => line.id !== lineId)
+        };
+      })
+    }));
+  };
+
+  // Eliminar un asiento completo con todas sus líneas
+  const handleDeleteEntry = (entryId: string, entryNumber: number) => {
+    if (window.confirm(`¿Estás seguro de eliminar el Asiento Nº ${entryNumber} y todas sus cuentas asociadas?`)) {
+      setPracticeData(prev => ({
+        ...prev,
+        journalEntries: (prev.journalEntries || []).filter(entry => entry.id !== entryId)
+      }));
+    }
   };
 
   return (
@@ -527,7 +646,7 @@ export const PracticeView: React.FC = () => {
           <BookOpen className="w-4 h-4" />
           <span>3. Libro Diario Manual</span>
           <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-black/40 text-indigo-200 font-mono">
-            {practiceData.journalRows.length} partidas
+            {practiceData.journalEntries?.length || 0} asientos
           </span>
         </button>
       </div>
@@ -1482,60 +1601,78 @@ export const PracticeView: React.FC = () => {
       )}
 
       {/* =========================================================================================
-          HERRAMIENTA 3: LIBRO DIARIO MANUAL
+          HERRAMIENTA 3: LIBRO DIARIO MANUAL (AGRUPADO POR ASIENTO Y FECHA COMPARTIDA)
           ========================================================================================= */}
       {activePracticeTab === 'journal' && (
-        <div className="space-y-4">
+        <div className="space-y-6">
           
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 p-4 rounded-2xl bg-slate-900/60 border border-slate-800">
+          {/* Tarjetas de Resumen Global de Partida Doble */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 p-4 rounded-2xl bg-slate-900/60 border border-slate-800 shadow-md">
             <div>
-              <span className="text-[10px] text-slate-400 uppercase font-mono">Total Sumas al Debe</span>
+              <span className="text-[10px] text-slate-400 uppercase font-mono">Total General al Debe</span>
               <div className="text-xl font-bold text-blue-300 font-mono mt-0.5">
                 {formatCurrency(journalTotals.totalDebit)}
               </div>
             </div>
             <div>
-              <span className="text-[10px] text-slate-400 uppercase font-mono">Total Sumas al Haber</span>
+              <span className="text-[10px] text-slate-400 uppercase font-mono">Total General al Haber</span>
               <div className="text-xl font-bold text-emerald-300 font-mono mt-0.5">
                 {formatCurrency(journalTotals.totalCredit)}
               </div>
             </div>
-            <div className="flex items-center justify-between">
-              <div>
-                <span className="text-[10px] text-slate-400 uppercase font-mono">Estado de Balance</span>
-                <div className={`text-sm font-bold flex items-center gap-1.5 mt-0.5 ${
-                  journalTotals.isBalanced ? 'text-emerald-400' : 'text-rose-400'
-                }`}>
-                  {journalTotals.isBalanced ? (
-                    <>
-                      <CheckCircle2 className="w-4 h-4" />
-                      <span>Asientos Cuadrados ✓</span>
-                    </>
-                  ) : (
-                    <>
-                      <AlertTriangle className="w-4 h-4" />
-                      <span>Diferencia: {formatCurrency(journalTotals.difference)}</span>
-                    </>
-                  )}
-                </div>
+            <div>
+              <span className="text-[10px] text-slate-400 uppercase font-mono">Asientos Registrados</span>
+              <div className="text-xl font-bold text-white font-mono mt-0.5">
+                {journalTotals.entriesCount} <span className="text-xs text-slate-400 font-normal">({journalTotals.linesCount} líneas)</span>
               </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => window.print()}
-                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition shadow-sm no-print"
-                  title="Descargar reporte del Libro Diario en PDF o imprimir"
-                >
-                  <Printer className="w-3.5 h-3.5 text-cyan-400" />
-                  <span className="hidden sm:inline">Descargar / Imprimir PDF</span>
-                </button>
-                <button
-                  onClick={handleAddJournalRow}
-                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition shadow-md shadow-indigo-600/20 no-print"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>Agregar Partida</span>
-                </button>
+            </div>
+            <div className="flex flex-col justify-between">
+              <span className="text-[10px] text-slate-400 uppercase font-mono">Balance General</span>
+              <div className={`text-sm font-bold flex items-center gap-1.5 mt-0.5 ${
+                journalTotals.isBalanced ? 'text-emerald-400' : 'text-rose-400'
+              }`}>
+                {journalTotals.isBalanced ? (
+                  <>
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>Partida Doble Balanceada ✓</span>
+                  </>
+                ) : (
+                  <>
+                    <AlertTriangle className="w-4 h-4" />
+                    <span>Diferencia: {formatCurrency(journalTotals.difference)}</span>
+                  </>
+                )}
               </div>
+            </div>
+          </div>
+
+          {/* Barra de Acciones y Explicación */}
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 no-print">
+            <div>
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <BookOpen className="w-4 h-4 text-indigo-400" />
+                Asientos Contables Registrados
+              </h3>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Cada asiento comparte una <strong>única fecha editable</strong> para todas sus cuentas. Puedes agregar tantas líneas como necesites a un asiento o crear nuevos asientos con fecha independiente.
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => window.print()}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition shadow-sm"
+                title="Descargar reporte del Libro Diario en PDF o imprimir"
+              >
+                <Printer className="w-3.5 h-3.5 text-cyan-400" />
+                <span className="hidden sm:inline">Descargar / Imprimir PDF</span>
+              </button>
+              <button
+                onClick={handleAddNewEntry}
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-md shadow-indigo-600/20 transition"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>+ Nuevo Asiento</span>
+              </button>
             </div>
           </div>
 
@@ -1544,7 +1681,7 @@ export const PracticeView: React.FC = () => {
             <div className="flex justify-between items-center">
               <div>
                 <h1 className="text-xl font-extrabold text-black uppercase tracking-tight">Libro Diario Contable</h1>
-                <p className="text-xs text-slate-700 font-medium">Sistemas de Información Contable • Práctica Universitaria</p>
+                <p className="text-xs text-slate-700 font-medium">Sistemas de Información Contable • Registro por Operaciones Asentadas</p>
               </div>
               <div className="text-right text-xs text-slate-800">
                 <div className="font-semibold">Fecha de Emisión: {new Date().toLocaleDateString('es-AR')}</div>
@@ -1555,149 +1692,269 @@ export const PracticeView: React.FC = () => {
             </div>
           </div>
 
-          <div className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900/70 shadow-xl">
-            <table className="w-full text-left text-xs border-collapse">
-              <thead>
-                <tr className="bg-slate-950 text-slate-400 uppercase font-mono text-[11px] border-b border-slate-800">
-                  <th className="py-3 px-3 w-32">Fecha</th>
-                  <th className="py-3 px-3 min-w-[220px] font-sans">Cuenta Contable</th>
-                  <th className="py-3 px-3 min-w-[260px] font-sans">Detalle / Glosa</th>
-                  <th className="py-3 px-3 w-36 text-right">Debe ($)</th>
-                  <th className="py-3 px-3 w-36 text-right">Haber ($)</th>
-                  <th className="py-3 px-2 w-10 text-center print:hidden">Acción</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800/60 font-mono text-slate-200">
-                {practiceData.journalRows.length === 0 ? (
-                  <tr>
-                    <td colSpan={6} className="py-8 text-center text-slate-500 font-sans">
-                      No hay asientos cargados. Haz clic en "Agregar Partida" para registrar tu primer asiento contable.
-                    </td>
-                  </tr>
-                ) : (
-                  practiceData.journalRows.map((row) => (
-                    <tr key={row.id} className="hover:bg-slate-800/40 transition group">
-                      
-                      {/* Fecha */}
-                      <td className="py-2.5 px-3">
-                        <span className="hidden print:block font-mono text-black font-semibold text-xs">
-                          {row.date || '—'}
-                        </span>
-                        <input
-                          type="date"
-                          value={row.date}
-                          onChange={(e) => handleUpdateJournalRow(row.id, 'date', e.target.value)}
-                          className="w-full px-2 py-1.5 text-slate-300 rounded bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-indigo-500 text-[11px] print:hidden"
-                        />
-                      </td>
+          {/* Lista de Asientos Contables Agrupados */}
+          {(!practiceData.journalEntries || practiceData.journalEntries.length === 0) ? (
+            <div className="py-16 text-center rounded-2xl border-2 border-dashed border-slate-800 bg-slate-900/40 p-8 space-y-4">
+              <div className="w-12 h-12 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 flex items-center justify-center mx-auto">
+                <BookOpen className="w-6 h-6" />
+              </div>
+              <div>
+                <h4 className="text-base font-bold text-white">No hay asientos contables registrados</h4>
+                <p className="text-xs text-slate-400 max-w-md mx-auto mt-1">
+                  Comienza creando tu primer asiento contable con su fecha única compartida y agrupa debajo todas las cuentas pertenecientes a esa operación.
+                </p>
+              </div>
+              <button
+                onClick={handleAddNewEntry}
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-lg shadow-indigo-600/30 transition"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Crear Asiento Nº 1</span>
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-6">
+              {practiceData.journalEntries.map((entry) => {
+                const entryDebit = round2(entry.lines.reduce((s, l) => s + (Number(l.debit) || 0), 0));
+                const entryCredit = round2(entry.lines.reduce((s, l) => s + (Number(l.credit) || 0), 0));
+                const entryDiff = round2(Math.abs(entryDebit - entryCredit));
+                const isEntryBalanced = entryDiff === 0 && (entryDebit > 0 || entryCredit > 0);
 
-                      {/* Cuenta Contable (Destacada, negrita de alto contraste para PDF) */}
-                      <td className="py-2.5 px-3 font-sans">
-                        <span className="hidden print:block font-bold text-black text-sm tracking-tight">
-                          {row.accountName || '—'}
+                return (
+                  <div 
+                    key={entry.id} 
+                    className="rounded-2xl border border-slate-800 bg-slate-900/60 shadow-lg overflow-hidden print:border-black print:bg-white print:shadow-none print:break-inside-avoid"
+                  >
+                    {/* Encabezado del Asiento (Número, Fecha Única Compartida y Estado de Balance) */}
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 px-4 py-3 bg-slate-950/80 border-b border-slate-800 print:bg-slate-100 print:border-black">
+                      <div className="flex items-center gap-3 flex-wrap">
+                        {/* Número de Asiento */}
+                        <span className="font-mono font-extrabold px-3 py-1 rounded-xl bg-indigo-600/20 text-indigo-300 border border-indigo-500/30 text-xs flex items-center gap-1.5 print:bg-transparent print:border-black print:text-black">
+                          <span>Asiento Nº {entry.entryNumber}</span>
                         </span>
-                        <input
-                          type="text"
-                          placeholder="Nombre de la cuenta (ej. Caja, Mercaderías, Proveedores)..."
-                          value={row.accountName}
-                          onChange={(e) => handleUpdateJournalRow(row.id, 'accountName', e.target.value)}
-                          className="w-full px-2.5 py-1.5 text-white font-semibold rounded bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-indigo-500 text-xs print:hidden"
-                        />
-                      </td>
 
-                      {/* Detalle / Glosa (Nítido y legible para PDF) */}
-                      <td className="py-2.5 px-3 font-sans">
-                        <span className="hidden print:block text-slate-900 text-xs leading-relaxed italic">
-                          {row.detail || '—'}
-                        </span>
-                        <input
-                          type="text"
-                          placeholder="Glosa o comprobante (ej. Por compra según FC A)..."
-                          value={row.detail}
-                          onChange={(e) => handleUpdateJournalRow(row.id, 'detail', e.target.value)}
-                          className="w-full px-2.5 py-1.5 text-slate-300 rounded bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-indigo-500 text-xs print:hidden"
-                        />
-                      </td>
+                        {/* Fecha Única Compartida para todas las líneas de este asiento */}
+                        <div className="flex items-center gap-2">
+                          <label className="text-[11px] text-slate-400 font-medium flex items-center gap-1.5 no-print">
+                            <Calendar className="w-3.5 h-3.5 text-indigo-400" />
+                            <span>Fecha:</span>
+                          </label>
+                          <input
+                            type="date"
+                            value={entry.date}
+                            onChange={(e) => handleUpdateEntryDate(entry.id, e.target.value)}
+                            className="px-2.5 py-1 text-xs font-mono font-semibold text-white bg-slate-900 border border-slate-700 rounded-lg focus:outline-none focus:border-indigo-500 no-print"
+                          />
+                          <span className="hidden print:inline font-mono font-bold text-black text-xs">
+                            Fecha: {entry.date ? formatDate(entry.date) : '—'}
+                          </span>
+                        </div>
+                      </div>
 
-                      {/* Debe ($) */}
-                      <td className="py-2.5 px-3 text-right">
-                        <span className="hidden print:block font-mono font-bold text-black text-sm">
-                          {row.debit > 0 ? formatCurrency(row.debit) : '—'}
-                        </span>
-                        <input
-                          type="number"
-                          min="0"
-                          step="any"
-                          value={row.debit || ''}
-                          onChange={(e) => handleUpdateJournalRow(row.id, 'debit', e.target.value)}
-                          placeholder="0.00"
-                          className="w-full px-2 py-1.5 text-right font-bold text-blue-300 rounded bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-blue-500 text-xs print:hidden"
-                        />
-                      </td>
+                      {/* Estado de balance de este asiento + Acciones */}
+                      <div className="flex items-center gap-2.5 justify-between sm:justify-end">
+                        <div className={`text-xs font-bold px-2.5 py-1 rounded-lg flex items-center gap-1.5 border print:border-black print:text-black ${
+                          isEntryBalanced 
+                            ? 'bg-emerald-950/40 text-emerald-300 border-emerald-800/40 print:bg-slate-50' 
+                            : 'bg-amber-950/40 text-amber-300 border-amber-800/40 print:bg-slate-50'
+                        }`}>
+                          {isEntryBalanced ? (
+                            <>
+                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 print:text-black" />
+                              <span>Cuadrado ({formatCurrency(entryDebit)})</span>
+                            </>
+                          ) : (
+                            <>
+                              <AlertTriangle className="w-3.5 h-3.5 text-amber-400 print:text-black" />
+                              <span>Descuadre: {formatCurrency(entryDiff)}</span>
+                            </>
+                          )}
+                        </div>
 
-                      {/* Haber ($) */}
-                      <td className="py-2.5 px-3 text-right">
-                        <span className="hidden print:block font-mono font-bold text-black text-sm">
-                          {row.credit > 0 ? formatCurrency(row.credit) : '—'}
-                        </span>
-                        <input
-                          type="number"
-                          min="0"
-                          step="any"
-                          value={row.credit || ''}
-                          onChange={(e) => handleUpdateJournalRow(row.id, 'credit', e.target.value)}
-                          placeholder="0.00"
-                          className="w-full px-2 py-1.5 text-right font-bold text-emerald-300 rounded bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-emerald-500 text-xs print:hidden"
-                        />
-                      </td>
+                        <div className="flex items-center gap-1.5 no-print">
+                          <button
+                            onClick={() => handleAddLineToEntry(entry.id)}
+                            className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-indigo-600/30 hover:bg-indigo-600 text-indigo-200 hover:text-white text-xs font-semibold border border-indigo-500/30 transition shadow-sm"
+                            title="Agregar cuenta / partida a este asiento"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                            <span>+ Línea</span>
+                          </button>
 
-                      {/* Acción */}
-                      <td className="py-2 px-2 text-center print:hidden">
-                        <button
-                          onClick={() => handleDeleteJournalRow(row.id)}
-                          className="p-1 rounded text-slate-500 hover:text-rose-400 transition"
-                          title="Eliminar partida"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-              <tfoot className="bg-slate-950 text-white font-bold font-mono border-t-2 border-slate-800 text-xs">
-                <tr>
-                  <td colSpan={3} className="py-3 px-3 uppercase font-sans text-right font-bold text-slate-300 print:text-black">
-                    Totales Calculados:
-                  </td>
-                  <td className="py-3 px-3 text-right text-blue-300 print:text-black font-bold font-mono text-sm">
-                    {formatCurrency(journalTotals.totalDebit)}
-                  </td>
-                  <td className="py-3 px-3 text-right text-emerald-300 print:text-black font-bold font-mono text-sm">
-                    {formatCurrency(journalTotals.totalCredit)}
-                  </td>
-                  <td className="print:hidden"></td>
-                </tr>
-              </tfoot>
-            </table>
+                          <button
+                            onClick={() => handleDeleteEntry(entry.id, entry.entryNumber)}
+                            className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-950/30 border border-slate-800 hover:border-rose-900/40 transition"
+                            title={`Eliminar Asiento Nº ${entry.entryNumber}`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Tabla de Cuentas del Asiento */}
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs border-collapse">
+                        <thead>
+                          <tr className="bg-slate-950 text-slate-400 uppercase font-mono text-[10px] border-b border-slate-800">
+                            <th className="py-2.5 px-3 min-w-[220px] font-sans">Cuenta Contable</th>
+                            <th className="py-2.5 px-3 min-w-[260px] font-sans">Detalle / Glosa</th>
+                            <th className="py-2.5 px-3 w-36 text-right">Debe ($)</th>
+                            <th className="py-2.5 px-3 w-36 text-right">Haber ($)</th>
+                            <th className="py-2.5 px-2 w-10 text-center print:hidden">Acción</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/60 font-mono text-slate-200">
+                          {entry.lines.length === 0 ? (
+                            <tr>
+                              <td colSpan={5} className="py-4 text-center text-slate-500 font-sans text-xs">
+                                Este asiento no tiene líneas contables. Haz clic en <strong>+ Línea</strong> para comenzar a cargar cuentas.
+                              </td>
+                            </tr>
+                          ) : (
+                            entry.lines.map((line) => (
+                              <tr key={line.id} className="hover:bg-slate-800/40 transition group">
+                                
+                                {/* Cuenta Contable */}
+                                <td className="py-2 px-3 font-sans">
+                                  <span className="hidden print:block font-bold text-black text-sm tracking-tight">
+                                    {line.accountName || '—'}
+                                  </span>
+                                  <input
+                                    type="text"
+                                    placeholder="Cuenta (ej. Caja, Ventas, Proveedores)..."
+                                    value={line.accountName}
+                                    onChange={(e) => handleUpdateEntryLine(entry.id, line.id, 'accountName', e.target.value)}
+                                    className="w-full px-2.5 py-1.5 text-white font-semibold rounded bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-indigo-500 text-xs print:hidden"
+                                  />
+                                </td>
+
+                                {/* Detalle / Glosa */}
+                                <td className="py-2 px-3 font-sans">
+                                  <span className="hidden print:block text-slate-900 text-xs leading-relaxed italic">
+                                    {line.detail || '—'}
+                                  </span>
+                                  <input
+                                    type="text"
+                                    placeholder="Detalle o glosa (ej. Por cobranza, Según FC A)..."
+                                    value={line.detail}
+                                    onChange={(e) => handleUpdateEntryLine(entry.id, line.id, 'detail', e.target.value)}
+                                    className="w-full px-2.5 py-1.5 text-slate-300 rounded bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-indigo-500 text-xs print:hidden"
+                                  />
+                                </td>
+
+                                {/* Debe ($) */}
+                                <td className="py-2 px-3 text-right">
+                                  <span className="hidden print:block font-mono font-bold text-black text-sm">
+                                    {line.debit > 0 ? formatCurrency(line.debit) : '—'}
+                                  </span>
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="any"
+                                    value={line.debit || ''}
+                                    onChange={(e) => handleUpdateEntryLine(entry.id, line.id, 'debit', e.target.value)}
+                                    placeholder="0.00"
+                                    className="w-full px-2 py-1.5 text-right font-bold text-blue-300 rounded bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-blue-500 text-xs print:hidden"
+                                  />
+                                </td>
+
+                                {/* Haber ($) */}
+                                <td className="py-2 px-3 text-right">
+                                  <span className="hidden print:block font-mono font-bold text-black text-sm">
+                                    {line.credit > 0 ? formatCurrency(line.credit) : '—'}
+                                  </span>
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="any"
+                                    value={line.credit || ''}
+                                    onChange={(e) => handleUpdateEntryLine(entry.id, line.id, 'credit', e.target.value)}
+                                    placeholder="0.00"
+                                    className="w-full px-2 py-1.5 text-right font-bold text-emerald-300 rounded bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-emerald-500 text-xs print:hidden"
+                                  />
+                                </td>
+
+                                {/* Acción (Eliminar línea) */}
+                                <td className="py-2 px-2 text-center print:hidden">
+                                  <button
+                                    onClick={() => handleDeleteEntryLine(entry.id, line.id)}
+                                    className="p-1 rounded text-slate-500 hover:text-rose-400 transition"
+                                    title="Eliminar partida"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                        {/* Subtotales del Asiento */}
+                        <tfoot className="bg-slate-950/60 font-mono text-xs border-t border-slate-800 print:bg-slate-50 print:border-black">
+                          <tr>
+                            <td colSpan={2} className="py-2 px-3 font-sans text-right text-slate-400 print:text-black font-semibold text-[11px]">
+                              Totales Asiento Nº {entry.entryNumber}:
+                            </td>
+                            <td className="py-2 px-3 text-right font-bold text-blue-300 print:text-black font-mono">
+                              {formatCurrency(entryDebit)}
+                            </td>
+                            <td className="py-2 px-3 text-right font-bold text-emerald-300 print:text-black font-mono">
+                              {formatCurrency(entryCredit)}
+                            </td>
+                            <td className="print:hidden"></td>
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
+
+                    {/* Barra inferior del Asiento para añadir línea rápidamente */}
+                    <div className="px-4 py-2 bg-slate-950/30 border-t border-slate-800/60 flex justify-end no-print">
+                      <button
+                        onClick={() => handleAddLineToEntry(entry.id)}
+                        className="text-xs text-indigo-400 hover:text-indigo-300 font-semibold inline-flex items-center gap-1 transition"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>+ Agregar otra cuenta a este asiento</span>
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Botones al pie del Libro Diario */}
+          {practiceData.journalEntries && practiceData.journalEntries.length > 0 && (
+            <div className="flex flex-col sm:flex-row justify-between items-center gap-3 pt-2 no-print">
+              <button
+                onClick={() => window.print()}
+                className="text-xs text-slate-400 hover:text-white flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800 transition"
+              >
+                <Printer className="w-3.5 h-3.5 text-cyan-400" />
+                <span>Guardar / Descargar PDF</span>
+              </button>
+
+              <button
+                onClick={handleAddNewEntry}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-md shadow-indigo-600/20 transition"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>+ Crear Nuevo Asiento (con fecha independiente)</span>
+              </button>
+            </div>
+          )}
+
+          {/* Resumen Final en Impresión PDF */}
+          <div className="hidden print:block mt-6 pt-3 border-t-2 border-black font-mono text-xs">
+            <div className="flex justify-between items-center font-bold">
+              <span>TOTAL GENERAL DEL LIBRO DIARIO:</span>
+              <div className="flex gap-8">
+                <span>TOTAL DEBE: {formatCurrency(journalTotals.totalDebit)}</span>
+                <span>TOTAL HABER: {formatCurrency(journalTotals.totalCredit)}</span>
+              </div>
+            </div>
           </div>
 
-          <div className="flex justify-between items-center pt-1 no-print">
-            <button
-              onClick={() => window.print()}
-              className="text-xs text-slate-400 hover:text-white flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800 transition"
-            >
-              <Printer className="w-3.5 h-3.5 text-cyan-400" />
-              <span>Guardar / Descargar PDF</span>
-            </button>
-
-            <button
-              onClick={handleAddJournalRow}
-              className="text-indigo-400 hover:text-indigo-300 font-semibold text-xs flex items-center gap-1"
-            >
-              <Plus className="w-3.5 h-3.5" /> Agregar partida al asiento
-            </button>
-          </div>
         </div>
       )}
 

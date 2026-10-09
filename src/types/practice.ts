@@ -77,6 +77,21 @@ export interface GenericCostSheet {
   rows: GenericCostRow[];
 }
 
+export interface ManualJournalLine {
+  id: string;
+  accountName: string;
+  detail: string;
+  debit: number;
+  credit: number;
+}
+
+export interface ManualJournalEntry {
+  id: string;
+  entryNumber: number;
+  date: string;
+  lines: ManualJournalLine[];
+}
+
 export interface ManualJournalRow {
   id: string;
   entryNumber: number;
@@ -89,8 +104,10 @@ export interface ManualJournalRow {
 }
 
 export interface PracticeData {
-  journalRows: ManualJournalRow[];
+  journalEntries: ManualJournalEntry[];
+  journalRows?: ManualJournalRow[]; // Compatibilidad hacia atrás
   tAccounts: TAccount[];
   inventorySheets: FacultyInventorySheet[];
   genericCostSheets: GenericCostSheet[];
 }
+

@@ -1,6 +1,7 @@
 import { PracticeData } from '../types/practice';
 
 export const DEFAULT_PRACTICE_DATA: PracticeData = {
+  journalEntries: [],
   journalRows: [],
   tAccounts: [
     // Plantillas iniciales de cuentas en T listas para usar (sin movimientos ni saldos)
