@@ -15,6 +15,7 @@ import { TestRunnerView } from './components/tests/TestRunnerView';
 import { PracticeView } from './components/practice/PracticeView';
 import { ExercisesModal } from './components/exercises/ExercisesModal';
 import { ExportModal } from './components/export/ExportModal';
+import { AmbientBackground } from './components/layout/AmbientBackground';
 import { Menu, X } from 'lucide-react';
 
 const MainApp: React.FC = () => {
@@ -42,13 +43,17 @@ const MainApp: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-indigo-500 selection:text-white">
+    <div className="relative isolate min-h-screen text-slate-100 font-sans">
+      {/* Fondo ambiental monocromo (decorativo) */}
+      <AmbientBackground />
+
+      <div className="relative z-10 min-h-screen flex flex-col">
       
       {/* Botón flotante para menú móvil */}
       <div className="lg:hidden fixed bottom-4 right-4 z-50">
         <button
           onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-          className="p-3.5 rounded-full bg-indigo-600 text-white shadow-xl shadow-indigo-600/40 hover:bg-indigo-500 transition"
+          className="p-3.5 rounded-full bg-white text-slate-950 shadow-[0_10px_30px_-8px_rgba(0,0,0,0.8),inset_0_1px_0_rgba(255,255,255,0.7)] ring-1 ring-white/20 hover:bg-slate-50 transition duration-200"
           aria-label="Abrir menú"
         >
           {isMobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
@@ -78,7 +83,9 @@ const MainApp: React.FC = () => {
         />
 
         {/* Área de Contenido Principal a pantalla completa */}
-        <main className="flex-1 p-3 md:p-5 lg:p-6 w-full min-w-0 overflow-x-hidden min-h-[calc(100vh-61px)]">
+        <main className="flex-1 p-3 md:p-5 lg:p-7 w-full min-w-0 overflow-x-hidden min-h-[calc(100vh-61px)]">
+          {/* key por pestaña: dispara la transición de entrada al cambiar de sección */}
+          <div key={activeTab} className="view-transition">
           {activeTab === 'dashboard' && (
             <DashboardView
               onNavigateTab={(tab) => setActiveTab(tab)}
@@ -114,6 +121,7 @@ const MainApp: React.FC = () => {
           {activeTab === 'studyMode' && <StudyModeView />}
 
           {activeTab === 'tests' && <TestRunnerView />}
+          </div>
         </main>
       </div>
 
@@ -137,14 +145,20 @@ const MainApp: React.FC = () => {
       )}
 
       {/* Footer educativo */}
-      <footer className="border-t border-slate-900 bg-slate-950/80 text-center py-4 text-xs text-slate-500 no-print">
-        <p>
-          ContaLab AR • Desarrollado para estudiantes de la carrera de <strong>Contador Público</strong> (Sistemas de Información Contable)
-        </p>
-        <p className="text-[11px] text-slate-600 mt-0.5">
-          Cumple con la <strong>RT 17 FACPCE</strong> y principios de inventario permanente • PEPS, UEPS (académico), PPP e Identificación Específica
-        </p>
+      <footer className="border-t border-white/[0.06] bg-black/40 backdrop-blur-sm py-5 px-4 text-[11px] text-slate-500 no-print">
+        <div className="flex flex-col md:flex-row items-center justify-between gap-2 max-w-full">
+          <p className="flex items-center gap-2">
+            <span className="inline-flex items-center justify-center w-4 h-4 rounded bg-white text-slate-950 text-[9px] font-bold">C</span>
+            <span className="text-slate-300 font-medium">ContaLab AR</span>
+            <span className="text-slate-700">/</span>
+            <span>Desarrollado para estudiantes de la carrera de <strong className="text-slate-400 font-medium">Contador Público</strong> (Sistemas de Información Contable)</span>
+          </p>
+          <p className="text-slate-600 text-center md:text-right">
+            Cumple con la <strong className="text-slate-500 font-medium">RT 17 FACPCE</strong> y principios de inventario permanente • PEPS, UEPS (académico), PPP e Identificación Específica
+          </p>
+        </div>
       </footer>
+      </div>
     </div>
   );
 };
