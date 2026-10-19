@@ -12,6 +12,7 @@ import {
   Save, 
   FileSpreadsheet, 
   Calendar,
+  CalendarPlus,
   Layers,
   ArrowRight,
   Sparkles,
@@ -43,51 +44,81 @@ import { formatCurrency, formatQuantity, round2, round4, generateId, formatDate 
 import { recalculateInventorySheet } from '../../utils/inventorySheetCalculator';
 
 const PRACTICE_STORAGE_KEY = 'contalab_practica_contable_v2';
+const PRACTICE_ACTIVE_TAB_KEY = 'contalab_practica_active_tab_v2';
 
 export const PracticeView: React.FC = () => {
-  // Pestaña principal dentro de Práctica Contable
-  const [activePracticeTab, setActivePracticeTab] = useState<'journal' | 'tAccounts' | 'costs'>('tAccounts');
+  // Pestaña activa persistida en localStorage para no perder la vista al navegar o refrescar
+  const [activePracticeTab, setActivePracticeTab] = useState<'journal' | 'tAccounts' | 'costs'>(() => {
+    try {
+      const saved = localStorage.getItem(PRACTICE_ACTIVE_TAB_KEY);
+      if (saved === 'journal' || saved === 'tAccounts' || saved === 'costs') {
+        return saved;
+      }
+    } catch {}
+    return 'journal';
+  });
+
+  // Guardar pestaña activa al cambiar
+  useEffect(() => {
+    try {
+      localStorage.setItem(PRACTICE_ACTIVE_TAB_KEY, activePracticeTab);
+    } catch {}
+  }, [activePracticeTab]);
 
   // Sub-pestaña dentro de Planillas de Costos
   const [costToolTab, setCostToolTab] = useState<'inventory' | 'generic'>('inventory');
 
-  // Estado unificado persistido en localStorage
+  // Estado de auto-guardado para dar feedback al usuario
+  const [lastSavedTime, setLastSavedTime] = useState<string | null>(null);
+  const [saveStatus, setSaveStatus] = useState<'saved' | 'saving'>('saved');
+  const [showSaveToast, setShowSaveToast] = useState(false);
+
+  // Estado unificado persistido en localStorage con carga resiliente (nunca pierde asientos)
   const [practiceData, setPracticeData] = useState<PracticeData>(() => {
     try {
       localStorage.removeItem('contalab_practica_contable_v1'); // Limpiar datos de demostración anteriores
       const saved = localStorage.getItem(PRACTICE_STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (parsed.tAccounts && parsed.inventorySheets) {
-          // Migración transparente de journalRows a journalEntries agrupadas
-          if (!parsed.journalEntries) {
-            if (Array.isArray(parsed.journalRows) && parsed.journalRows.length > 0) {
-              const map = new Map<number, ManualJournalEntry>();
-              for (const r of parsed.journalRows) {
-                const eNum = r.entryNumber || 1;
-                if (!map.has(eNum)) {
-                  map.set(eNum, {
-                    id: generateId('pj_entry'),
-                    entryNumber: eNum,
-                    date: r.date || new Date().toISOString().slice(0, 10),
-                    lines: []
-                  });
-                }
-                const entry = map.get(eNum)!;
-                entry.lines.push({
-                  id: r.id || generateId('pj_line'),
-                  accountName: r.accountName || '',
-                  detail: r.detail || '',
-                  debit: Number(r.debit) || 0,
-                  credit: Number(r.credit) || 0
+        if (parsed && typeof parsed === 'object') {
+          let journalEntries: ManualJournalEntry[] = Array.isArray(parsed.journalEntries) 
+            ? parsed.journalEntries 
+            : [];
+
+          // Migración transparente si solo existían journalRows
+          if (journalEntries.length === 0 && Array.isArray(parsed.journalRows) && parsed.journalRows.length > 0) {
+            const map = new Map<number, ManualJournalEntry>();
+            for (const r of parsed.journalRows) {
+              const eNum = r.entryNumber || 1;
+              if (!map.has(eNum)) {
+                map.set(eNum, {
+                  id: generateId('pj_entry'),
+                  entryNumber: eNum,
+                  date: r.date || new Date().toISOString().slice(0, 10),
+                  hasDeferredDates: false,
+                  lines: []
                 });
               }
-              parsed.journalEntries = Array.from(map.values());
-            } else {
-              parsed.journalEntries = [];
+              const entry = map.get(eNum)!;
+              entry.lines.push({
+                id: r.id || generateId('pj_line'),
+                accountName: r.accountName || '',
+                detail: r.detail || '',
+                debit: Number(r.debit) || 0,
+                credit: Number(r.credit) || 0,
+                date: r.date
+              });
             }
+            journalEntries = Array.from(map.values());
           }
-          return parsed;
+
+          return {
+            journalEntries,
+            journalRows: parsed.journalRows || [],
+            tAccounts: Array.isArray(parsed.tAccounts) ? parsed.tAccounts : DEFAULT_PRACTICE_DATA.tAccounts,
+            inventorySheets: Array.isArray(parsed.inventorySheets) ? parsed.inventorySheets : DEFAULT_PRACTICE_DATA.inventorySheets,
+            genericCostSheets: Array.isArray(parsed.genericCostSheets) ? parsed.genericCostSheets : DEFAULT_PRACTICE_DATA.genericCostSheets,
+          };
         }
       }
     } catch (e) {
@@ -96,14 +127,49 @@ export const PracticeView: React.FC = () => {
     return DEFAULT_PRACTICE_DATA;
   });
 
-  // Guardado automático en localStorage
+  // Guardado automático debounced en localStorage con actualización de hora
   useEffect(() => {
+    setSaveStatus('saving');
+    const timer = setTimeout(() => {
+      try {
+        localStorage.setItem(PRACTICE_STORAGE_KEY, JSON.stringify(practiceData));
+        const now = new Date();
+        const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+        setLastSavedTime(timeStr);
+        setSaveStatus('saved');
+      } catch (e) {
+        console.error('Error guardando práctica en localStorage:', e);
+      }
+    }, 150);
+
+    return () => clearTimeout(timer);
+  }, [practiceData]);
+
+  // Persistencia inmediata antes de cerrar o recargar la ventana
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      try {
+        localStorage.setItem(PRACTICE_STORAGE_KEY, JSON.stringify(practiceData));
+      } catch {}
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [practiceData]);
+
+  // Guardado manual forzado para confirmación visual inmediata
+  const handleManualSave = () => {
     try {
       localStorage.setItem(PRACTICE_STORAGE_KEY, JSON.stringify(practiceData));
+      const now = new Date();
+      const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+      setLastSavedTime(timeStr);
+      setSaveStatus('saved');
+      setShowSaveToast(true);
+      setTimeout(() => setShowSaveToast(false), 2500);
     } catch (e) {
-      console.error('Error guardando práctica en localStorage:', e);
+      console.error('Error al guardar manualmente en localStorage:', e);
     }
-  }, [practiceData]);
+  };
 
   const handleResetClean = () => {
     if (window.confirm('¿Deseas reiniciar y vaciar todas las herramientas de práctica contable para empezar desde cero?')) {
@@ -464,24 +530,28 @@ export const PracticeView: React.FC = () => {
       ? Math.max(...entries.map(e => e.entryNumber || 1)) + 1 
       : 1;
 
+    const newDate = new Date().toISOString().slice(0, 10);
     const newEntry: ManualJournalEntry = {
       id: generateId('pj_entry'),
       entryNumber: nextEntry,
-      date: new Date().toISOString().slice(0, 10),
+      date: newDate,
+      hasDeferredDates: false,
       lines: [
         {
           id: generateId('pj_line'),
           accountName: '',
           detail: '',
           debit: 0,
-          credit: 0
+          credit: 0,
+          date: newDate
         },
         {
           id: generateId('pj_line'),
           accountName: '',
           detail: '',
           debit: 0,
-          credit: 0
+          credit: 0,
+          date: newDate
         }
       ]
     };
@@ -492,31 +562,100 @@ export const PracticeView: React.FC = () => {
     }));
   };
 
-  // Modificar la fecha única compartida de un asiento específico (NO altera ningún otro asiento)
+  // Modificar la fecha única compartida / principal de un asiento específico
   const handleUpdateEntryDate = (entryId: string, newDate: string) => {
     setPracticeData(prev => ({
       ...prev,
-      journalEntries: (prev.journalEntries || []).map(entry => 
-        entry.id === entryId ? { ...entry, date: newDate } : entry
-      )
+      journalEntries: (prev.journalEntries || []).map(entry => {
+        if (entry.id !== entryId) return entry;
+        const oldMainDate = entry.date;
+        return {
+          ...entry,
+          date: newDate,
+          lines: entry.lines.map(line => {
+            // Si la línea no tenía fecha propia o tenía la misma fecha principal anterior, se actualiza
+            if (!line.date || line.date === oldMainDate) {
+              return { ...line, date: newDate };
+            }
+            return line;
+          })
+        };
+      })
+    }));
+  };
+
+  // Activar o desactivar fechas diferidas dentro de un asiento
+  const handleToggleDeferredDates = (entryId: string) => {
+    setPracticeData(prev => ({
+      ...prev,
+      journalEntries: (prev.journalEntries || []).map(entry => {
+        if (entry.id !== entryId) return entry;
+        const willEnable = !entry.hasDeferredDates;
+        return {
+          ...entry,
+          hasDeferredDates: willEnable,
+          lines: entry.lines.map(line => ({
+            ...line,
+            // Al activar, cada partida asegura tener fecha definida (por defecto la principal)
+            date: willEnable ? (line.date || entry.date) : entry.date
+          }))
+        };
+      })
     }));
   };
 
   // Agregar una línea contable adicional al mismo asiento
-  const handleAddLineToEntry = (entryId: string) => {
-    const newLine: ManualJournalLine = {
-      id: generateId('pj_line'),
-      accountName: '',
-      detail: '',
-      debit: 0,
-      credit: 0
-    };
-
+  const handleAddLineToEntry = (entryId: string, specificDate?: string) => {
     setPracticeData(prev => ({
       ...prev,
-      journalEntries: (prev.journalEntries || []).map(entry => 
-        entry.id === entryId ? { ...entry, lines: [...entry.lines, newLine] } : entry
-      )
+      journalEntries: (prev.journalEntries || []).map(entry => {
+        if (entry.id !== entryId) return entry;
+        const newLine: ManualJournalLine = {
+          id: generateId('pj_line'),
+          accountName: '',
+          detail: '',
+          debit: 0,
+          credit: 0,
+          date: specificDate || (entry.hasDeferredDates ? entry.date : undefined)
+        };
+
+        return {
+          ...entry,
+          lines: [...entry.lines, newLine]
+        };
+      })
+    }));
+  };
+
+  // Agregar una línea contable con fecha diferida (ej. bonificación o ajuste posterior)
+  const handleAddDeferredLine = (entryId: string) => {
+    setPracticeData(prev => ({
+      ...prev,
+      journalEntries: (prev.journalEntries || []).map(entry => {
+        if (entry.id !== entryId) return entry;
+        
+        // Buscar la última fecha diferida que ya tenga el asiento, o usar la fecha principal
+        const deferredLines = entry.lines.filter(l => l.date && l.date !== entry.date);
+        let defaultDate = entry.date;
+        if (deferredLines.length > 0) {
+          defaultDate = deferredLines[deferredLines.length - 1].date || entry.date;
+        }
+
+        const newLine: ManualJournalLine = {
+          id: generateId('pj_line'),
+          accountName: '',
+          detail: '',
+          debit: 0,
+          credit: 0,
+          date: defaultDate
+        };
+
+        return {
+          ...entry,
+          hasDeferredDates: true,
+          lines: [...entry.lines, newLine]
+        };
+      })
     }));
   };
 
@@ -526,13 +665,31 @@ export const PracticeView: React.FC = () => {
       ...prev,
       journalEntries: (prev.journalEntries || []).map(entry => {
         if (entry.id !== entryId) return entry;
+
+        let willHaveDeferred = entry.hasDeferredDates;
+        if (field === 'date' && value && value !== entry.date) {
+          willHaveDeferred = true;
+        }
+
         return {
           ...entry,
+          hasDeferredDates: willHaveDeferred,
           lines: entry.lines.map(line => {
             if (line.id !== lineId) return line;
+
+            let parsedVal = value;
+            if (field === 'debit' || field === 'credit') {
+              if (value === '' || value === null || value === undefined) {
+                parsedVal = 0;
+              } else {
+                const clean = String(value).replace(',', '.');
+                parsedVal = isNaN(Number(clean)) ? 0 : Number(clean);
+              }
+            }
+
             return {
               ...line,
-              [field]: (field === 'debit' || field === 'credit') ? Number(value) || 0 : value
+              [field]: parsedVal
             };
           })
         };
@@ -567,6 +724,14 @@ export const PracticeView: React.FC = () => {
   return (
     <div className="space-y-6">
       
+      {/* Toast flotante de guardado manual exitoso */}
+      {showSaveToast && (
+        <div className="fixed bottom-6 right-6 z-50 flex items-center gap-2.5 px-4 py-3 rounded-2xl bg-slate-900 text-emerald-300 border border-emerald-500/50 shadow-2xl shadow-black/80 animate-in fade-in slide-in-from-bottom-3 duration-200">
+          <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+          <span className="text-xs font-semibold">¡Asientos y práctica guardados automáticamente en tu dispositivo!</span>
+        </div>
+      )}
+
       {/* Cabecera Principal de la Sección de Práctica Contable */}
       <div className="bg-gradient-to-r from-slate-900 via-indigo-950/40 to-slate-900 p-6 rounded-2xl border border-slate-800 shadow-xl flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
@@ -587,11 +752,34 @@ export const PracticeView: React.FC = () => {
           </p>
         </div>
 
-        <div className="flex items-center gap-2.5 self-start md:self-auto">
-          <div className="text-xs text-slate-400 flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 font-mono">
-            <Save className="w-3.5 h-3.5 text-emerald-400" />
-            <span>Guardado automático</span>
+        <div className="flex items-center gap-2.5 self-start md:self-auto flex-wrap">
+          <div className={`text-xs flex items-center gap-1.5 px-3 py-1.5 rounded-xl border font-mono transition-all ${
+            saveStatus === 'saved'
+              ? 'bg-slate-950 border-emerald-900/50 text-emerald-300'
+              : 'bg-slate-950 border-amber-900/50 text-amber-300'
+          }`}>
+            {saveStatus === 'saved' ? (
+              <>
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Auto-guardado {lastSavedTime ? `(${lastSavedTime})` : 'activo'}</span>
+              </>
+            ) : (
+              <>
+                <RotateCcw className="w-3.5 h-3.5 text-amber-400 animate-spin" />
+                <span>Guardando...</span>
+              </>
+            )}
           </div>
+
+          <button
+            onClick={handleManualSave}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 hover:text-emerald-200 text-xs font-semibold border border-emerald-500/30 transition shadow-sm"
+            title="Guardar manualmente todos los asientos y cambios ahora"
+          >
+            <Save className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Guardar Ahora</span>
+          </button>
+
           <button
             onClick={handleResetClean}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium border border-slate-700 transition"
@@ -1725,7 +1913,7 @@ export const PracticeView: React.FC = () => {
                     key={entry.id} 
                     className="rounded-2xl border border-slate-800 bg-slate-900/60 shadow-lg overflow-hidden print:border-black print:bg-white print:shadow-none print:break-inside-avoid"
                   >
-                    {/* Encabezado del Asiento (Número, Fecha Única Compartida y Estado de Balance) */}
+                    {/* Encabezado del Asiento (Número, Fecha Única o Principal, Opción Diferir Fechas y Estado de Balance) */}
                     <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 px-4 py-3 bg-slate-950/80 border-b border-slate-800 print:bg-slate-100 print:border-black">
                       <div className="flex items-center gap-3 flex-wrap">
                         {/* Número de Asiento */}
@@ -1733,11 +1921,11 @@ export const PracticeView: React.FC = () => {
                           <span>Asiento Nº {entry.entryNumber}</span>
                         </span>
 
-                        {/* Fecha Única Compartida para todas las líneas de este asiento */}
+                        {/* Fecha Principal del Asiento */}
                         <div className="flex items-center gap-2">
                           <label className="text-[11px] text-slate-400 font-medium flex items-center gap-1.5 no-print">
                             <Calendar className="w-3.5 h-3.5 text-indigo-400" />
-                            <span>Fecha:</span>
+                            <span>Fecha {entry.hasDeferredDates ? 'Principal:' : ':'}</span>
                           </label>
                           <input
                             type="date"
@@ -1746,13 +1934,28 @@ export const PracticeView: React.FC = () => {
                             className="px-2.5 py-1 text-xs font-mono font-semibold text-white bg-slate-900 border border-slate-700 rounded-lg focus:outline-none focus:border-indigo-500 no-print"
                           />
                           <span className="hidden print:inline font-mono font-bold text-black text-xs">
-                            Fecha: {entry.date ? formatDate(entry.date) : '—'}
+                            Fecha {entry.hasDeferredDates ? 'Principal' : ''}: {entry.date ? formatDate(entry.date) : '—'}
                           </span>
                         </div>
+
+                        {/* Botón para activar/diferir fechas dentro de este mismo asiento (ej. compra 19/10 y bonificación 25/10) */}
+                        <button
+                          type="button"
+                          onClick={() => handleToggleDeferredDates(entry.id)}
+                          className={`no-print flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold border transition ${
+                            entry.hasDeferredDates
+                              ? 'bg-purple-950/60 text-purple-300 border-purple-500/40 hover:bg-purple-900/60 shadow-sm shadow-purple-950/50'
+                              : 'bg-slate-900 text-slate-400 border-slate-700 hover:text-indigo-300 hover:border-indigo-500/50'
+                          }`}
+                          title="Permite asignar fechas diferentes a partidas de este mismo asiento (ej. compra el 19/10 y bonificación el 25/10)"
+                        >
+                          <CalendarPlus className="w-3.5 h-3.5 text-purple-400" />
+                          <span>{entry.hasDeferredDates ? 'Fechas Diferidas: Activas' : '+ Diferir Fecha'}</span>
+                        </button>
                       </div>
 
                       {/* Estado de balance de este asiento + Acciones */}
-                      <div className="flex items-center gap-2.5 justify-between sm:justify-end">
+                      <div className="flex items-center gap-2.5 justify-between sm:justify-end flex-wrap">
                         <div className={`text-xs font-bold px-2.5 py-1 rounded-lg flex items-center gap-1.5 border print:border-black print:text-black ${
                           isEntryBalanced 
                             ? 'bg-emerald-950/40 text-emerald-300 border-emerald-800/40 print:bg-slate-50' 
@@ -1797,6 +2000,9 @@ export const PracticeView: React.FC = () => {
                       <table className="w-full text-left text-xs border-collapse">
                         <thead>
                           <tr className="bg-slate-950 text-slate-400 uppercase font-mono text-[10px] border-b border-slate-800">
+                            {entry.hasDeferredDates && (
+                              <th className="py-2.5 px-3 w-36 font-sans text-purple-300">Fecha</th>
+                            )}
                             <th className="py-2.5 px-3 min-w-[220px] font-sans">Cuenta Contable</th>
                             <th className="py-2.5 px-3 min-w-[260px] font-sans">Detalle / Glosa</th>
                             <th className="py-2.5 px-3 w-36 text-right">Debe ($)</th>
@@ -1807,92 +2013,135 @@ export const PracticeView: React.FC = () => {
                         <tbody className="divide-y divide-slate-800/60 font-mono text-slate-200">
                           {entry.lines.length === 0 ? (
                             <tr>
-                              <td colSpan={5} className="py-4 text-center text-slate-500 font-sans text-xs">
+                              <td colSpan={entry.hasDeferredDates ? 6 : 5} className="py-4 text-center text-slate-500 font-sans text-xs">
                                 Este asiento no tiene líneas contables. Haz clic en <strong>+ Línea</strong> para comenzar a cargar cuentas.
                               </td>
                             </tr>
                           ) : (
-                            entry.lines.map((line) => (
-                              <tr key={line.id} className="hover:bg-slate-800/40 transition group">
-                                
-                                {/* Cuenta Contable */}
-                                <td className="py-2 px-3 font-sans">
-                                  <span className="hidden print:block font-bold text-black text-sm tracking-tight">
-                                    {line.accountName || '—'}
-                                  </span>
-                                  <input
-                                    type="text"
-                                    placeholder="Cuenta (ej. Caja, Ventas, Proveedores)..."
-                                    value={line.accountName}
-                                    onChange={(e) => handleUpdateEntryLine(entry.id, line.id, 'accountName', e.target.value)}
-                                    className="w-full px-2.5 py-1.5 text-white font-semibold rounded bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-indigo-500 text-xs print:hidden"
-                                  />
-                                </td>
+                            entry.lines.map((line, lineIdx) => {
+                              const lineDate = line.date || entry.date;
+                              const prevLineDate = lineIdx > 0 ? (entry.lines[lineIdx - 1].date || entry.date) : null;
+                              const isDateChange = entry.hasDeferredDates && lineIdx > 0 && lineDate !== prevLineDate;
 
-                                {/* Detalle / Glosa */}
-                                <td className="py-2 px-3 font-sans">
-                                  <span className="hidden print:block text-slate-900 text-xs leading-relaxed italic">
-                                    {line.detail || '—'}
-                                  </span>
-                                  <input
-                                    type="text"
-                                    placeholder="Detalle o glosa (ej. Por cobranza, Según FC A)..."
-                                    value={line.detail}
-                                    onChange={(e) => handleUpdateEntryLine(entry.id, line.id, 'detail', e.target.value)}
-                                    className="w-full px-2.5 py-1.5 text-slate-300 rounded bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-indigo-500 text-xs print:hidden"
-                                  />
-                                </td>
+                              return (
+                                <React.Fragment key={line.id}>
+                                  {/* Separador visual si hay cambio de fecha dentro del mismo asiento */}
+                                  {isDateChange && (
+                                    <tr className="bg-gradient-to-r from-purple-950/60 via-slate-900/80 to-slate-950 border-y border-purple-500/30 print:bg-slate-100 print:border-black font-sans">
+                                      <td colSpan={entry.hasDeferredDates ? 6 : 5} className="py-2 px-3">
+                                        <div className="flex items-center justify-between">
+                                          <div className="flex items-center gap-2 text-purple-300 print:text-black font-semibold text-xs">
+                                            <Calendar className="w-3.5 h-3.5 text-purple-400 print:text-black" />
+                                            <span>Fecha Diferida: {formatDate(lineDate)}</span>
+                                            <span className="text-[11px] font-normal text-slate-400 print:text-slate-700">
+                                              (Operación vinculada: bonificación / descuento / ajuste posterior en esta compra)
+                                            </span>
+                                          </div>
+                                          <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-purple-900/40 text-purple-200 border border-purple-700/50 print:border-black print:text-black print:bg-transparent">
+                                            Mismo Asiento Nº {entry.entryNumber}
+                                          </span>
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  )}
 
-                                {/* Debe ($) */}
-                                <td className="py-2 px-3 text-right">
-                                  <span className="hidden print:block font-mono font-bold text-black text-sm">
-                                    {line.debit > 0 ? formatCurrency(line.debit) : '—'}
-                                  </span>
-                                  <input
-                                    type="number"
-                                    min="0"
-                                    step="any"
-                                    value={line.debit || ''}
-                                    onChange={(e) => handleUpdateEntryLine(entry.id, line.id, 'debit', e.target.value)}
-                                    placeholder="0.00"
-                                    className="w-full px-2 py-1.5 text-right font-bold text-blue-300 rounded bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-blue-500 text-xs print:hidden"
-                                  />
-                                </td>
+                                  <tr className="hover:bg-slate-800/40 transition group">
+                                    {/* Columna Fecha cuando están activadas las fechas diferidas */}
+                                    {entry.hasDeferredDates && (
+                                      <td className="py-2 px-3 font-sans">
+                                        <span className="hidden print:block font-mono font-bold text-black text-xs">
+                                          {formatDate(lineDate)}
+                                        </span>
+                                        <input
+                                          type="date"
+                                          value={lineDate}
+                                          onChange={(e) => handleUpdateEntryLine(entry.id, line.id, 'date', e.target.value)}
+                                          className="w-full px-2 py-1 text-xs font-mono font-semibold text-purple-200 bg-slate-950/80 border border-purple-900/40 rounded focus:outline-none focus:border-purple-400 print:hidden"
+                                          title="Modificar fecha de esta partida específica"
+                                        />
+                                      </td>
+                                    )}
 
-                                {/* Haber ($) */}
-                                <td className="py-2 px-3 text-right">
-                                  <span className="hidden print:block font-mono font-bold text-black text-sm">
-                                    {line.credit > 0 ? formatCurrency(line.credit) : '—'}
-                                  </span>
-                                  <input
-                                    type="number"
-                                    min="0"
-                                    step="any"
-                                    value={line.credit || ''}
-                                    onChange={(e) => handleUpdateEntryLine(entry.id, line.id, 'credit', e.target.value)}
-                                    placeholder="0.00"
-                                    className="w-full px-2 py-1.5 text-right font-bold text-emerald-300 rounded bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-emerald-500 text-xs print:hidden"
-                                  />
-                                </td>
+                                    {/* Cuenta Contable */}
+                                    <td className="py-2 px-3 font-sans">
+                                      <span className="hidden print:block font-bold text-black text-sm tracking-tight">
+                                        {line.accountName || '—'}
+                                      </span>
+                                      <input
+                                        type="text"
+                                        placeholder="Cuenta (ej. Caja, Ventas, Proveedores)..."
+                                        value={line.accountName}
+                                        onChange={(e) => handleUpdateEntryLine(entry.id, line.id, 'accountName', e.target.value)}
+                                        className="w-full px-2.5 py-1.5 text-white font-semibold rounded bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-indigo-500 text-xs print:hidden"
+                                      />
+                                    </td>
 
-                                {/* Acción (Eliminar línea) */}
-                                <td className="py-2 px-2 text-center print:hidden">
-                                  <button
-                                    onClick={() => handleDeleteEntryLine(entry.id, line.id)}
-                                    className="p-1 rounded text-slate-500 hover:text-rose-400 transition"
-                                    title="Eliminar partida"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                  </button>
-                                </td>
-                              </tr>
-                            ))
+                                    {/* Detalle / Glosa */}
+                                    <td className="py-2 px-3 font-sans">
+                                      <span className="hidden print:block text-slate-900 text-xs leading-relaxed italic">
+                                        {line.detail || '—'}
+                                      </span>
+                                      <input
+                                        type="text"
+                                        placeholder="Detalle o glosa (ej. Por cobranza, Según FC A)..."
+                                        value={line.detail}
+                                        onChange={(e) => handleUpdateEntryLine(entry.id, line.id, 'detail', e.target.value)}
+                                        className="w-full px-2.5 py-1.5 text-slate-300 rounded bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-indigo-500 text-xs print:hidden"
+                                      />
+                                    </td>
+
+                                    {/* Debe ($) */}
+                                    <td className="py-2 px-3 text-right">
+                                      <span className="hidden print:block font-mono font-bold text-black text-sm">
+                                        {line.debit > 0 ? formatCurrency(line.debit) : '—'}
+                                      </span>
+                                      <input
+                                        type="number"
+                                        min="0"
+                                        step="any"
+                                        value={line.debit || ''}
+                                        onChange={(e) => handleUpdateEntryLine(entry.id, line.id, 'debit', e.target.value)}
+                                        placeholder="0.00"
+                                        className="w-full px-2 py-1.5 text-right font-bold text-blue-300 rounded bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-blue-500 text-xs print:hidden"
+                                      />
+                                    </td>
+
+                                    {/* Haber ($) */}
+                                    <td className="py-2 px-3 text-right">
+                                      <span className="hidden print:block font-mono font-bold text-black text-sm">
+                                        {line.credit > 0 ? formatCurrency(line.credit) : '—'}
+                                      </span>
+                                      <input
+                                        type="number"
+                                        min="0"
+                                        step="any"
+                                        value={line.credit || ''}
+                                        onChange={(e) => handleUpdateEntryLine(entry.id, line.id, 'credit', e.target.value)}
+                                        placeholder="0.00"
+                                        className="w-full px-2 py-1.5 text-right font-bold text-emerald-300 rounded bg-slate-950/80 border border-slate-800 focus:outline-none focus:border-emerald-500 text-xs print:hidden"
+                                      />
+                                    </td>
+
+                                    {/* Acción (Eliminar línea) */}
+                                    <td className="py-2 px-2 text-center print:hidden">
+                                      <button
+                                        onClick={() => handleDeleteEntryLine(entry.id, line.id)}
+                                        className="p-1 rounded text-slate-500 hover:text-rose-400 transition"
+                                        title="Eliminar partida"
+                                      >
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                      </button>
+                                    </td>
+                                  </tr>
+                                </React.Fragment>
+                              );
+                            })
                           )}
                         </tbody>
                         {/* Subtotales del Asiento */}
                         <tfoot className="bg-slate-950/60 font-mono text-xs border-t border-slate-800 print:bg-slate-50 print:border-black">
                           <tr>
-                            <td colSpan={2} className="py-2 px-3 font-sans text-right text-slate-400 print:text-black font-semibold text-[11px]">
+                            <td colSpan={entry.hasDeferredDates ? 3 : 2} className="py-2 px-3 font-sans text-right text-slate-400 print:text-black font-semibold text-[11px]">
                               Totales Asiento Nº {entry.entryNumber}:
                             </td>
                             <td className="py-2 px-3 text-right font-bold text-blue-300 print:text-black font-mono">
@@ -1908,14 +2157,37 @@ export const PracticeView: React.FC = () => {
                     </div>
 
                     {/* Barra inferior del Asiento para añadir línea rápidamente */}
-                    <div className="px-4 py-2 bg-slate-950/30 border-t border-slate-800/60 flex justify-end no-print">
-                      <button
-                        onClick={() => handleAddLineToEntry(entry.id)}
-                        className="text-xs text-indigo-400 hover:text-indigo-300 font-semibold inline-flex items-center gap-1 transition"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                        <span>+ Agregar otra cuenta a este asiento</span>
-                      </button>
+                    <div className="px-4 py-2.5 bg-slate-950/30 border-t border-slate-800/60 flex flex-wrap items-center justify-between gap-2 no-print">
+                      {entry.hasDeferredDates ? (
+                        <div className="text-[11px] text-purple-300 flex items-center gap-1.5">
+                          <CalendarPlus className="w-3.5 h-3.5 text-purple-400" />
+                          <span>Fechas diferidas activadas: cada cuenta puede tener su fecha propia sin necesidad de crear otro asiento.</span>
+                        </div>
+                      ) : (
+                        <div className="text-[11px] text-slate-500">
+                          Todas las partidas se registran a la fecha única del asiento ({formatDate(entry.date)}).
+                        </div>
+                      )}
+
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {entry.hasDeferredDates && (
+                          <button
+                            onClick={() => handleAddDeferredLine(entry.id)}
+                            className="text-xs text-purple-300 hover:text-purple-200 font-semibold inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-purple-950/50 hover:bg-purple-900/50 border border-purple-500/30 transition shadow-sm"
+                            title="Agregar una partida con fecha diferida (ej. bonificación 25/10)"
+                          >
+                            <CalendarPlus className="w-3.5 h-3.5 text-purple-400" />
+                            <span>+ Agregar cuenta con fecha diferida</span>
+                          </button>
+                        )}
+                        <button
+                          onClick={() => handleAddLineToEntry(entry.id)}
+                          className="text-xs text-indigo-400 hover:text-indigo-300 font-semibold inline-flex items-center gap-1 transition"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>+ Agregar otra cuenta a este asiento</span>
+                        </button>
+                      </div>
                     </div>
                   </div>
                 );

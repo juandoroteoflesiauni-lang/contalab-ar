@@ -83,12 +83,14 @@ export interface ManualJournalLine {
   detail: string;
   debit: number;
   credit: number;
+  date?: string; // Fecha diferida u optativa para esta partida dentro del asiento
 }
 
 export interface ManualJournalEntry {
   id: string;
   entryNumber: number;
-  date: string;
+  date: string; // Fecha principal de la operación / compra
+  hasDeferredDates?: boolean; // Permite activar fechas diferidas entre partidas de este asiento
   lines: ManualJournalLine[];
 }
 
