@@ -1942,16 +1942,30 @@ export const PracticeView: React.FC = () => {
                 return (
                   <div 
                     key={entry.id} 
-                    className={`rounded-2xl border transition-all shadow-lg overflow-hidden print:border-black print:bg-white print:shadow-none print:break-inside-avoid ${
+                    className={`rounded-2xl transition-all duration-300 shadow-xl overflow-hidden print:border-black print:bg-white print:shadow-none print:break-inside-avoid relative ${
                       entry.reviewStatus === 'CORRECT'
-                        ? 'border-emerald-800/60 bg-slate-900/75 shadow-emerald-950/20'
+                        ? 'border-2 border-emerald-500 bg-slate-900/90 shadow-[0_0_35px_-5px_rgba(16,185,129,0.25)] ring-1 ring-emerald-500/40'
                         : entry.reviewStatus === 'INCORRECT'
-                        ? 'border-rose-800/60 bg-slate-900/75 shadow-rose-950/20'
-                        : 'border-slate-800 bg-slate-900/60'
+                        ? 'border-2 border-rose-500 bg-slate-900/90 shadow-[0_0_35px_-5px_rgba(244,63,94,0.25)] ring-1 ring-rose-500/40'
+                        : 'border border-slate-800 bg-slate-900/60 shadow-lg'
                     }`}
                   >
+                    {/* Barra superior de resplandor cuando el asiento está marcado */}
+                    {entry.reviewStatus === 'CORRECT' && (
+                      <div className="h-1.5 w-full bg-gradient-to-r from-emerald-500 via-teal-400 to-emerald-500 shadow-sm shadow-emerald-500/50 no-print" />
+                    )}
+                    {entry.reviewStatus === 'INCORRECT' && (
+                      <div className="h-1.5 w-full bg-gradient-to-r from-rose-500 via-pink-400 to-rose-500 shadow-sm shadow-rose-500/50 no-print" />
+                    )}
+
                     {/* Encabezado del Asiento (Número, Fecha Única o Principal, Opción Diferir Fechas y Estado de Balance) */}
-                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 px-4 py-3 bg-slate-950/80 border-b border-slate-800 print:bg-slate-100 print:border-black">
+                    <div className={`flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 px-4 py-3 border-b transition-colors print:bg-slate-100 print:border-black ${
+                      entry.reviewStatus === 'CORRECT'
+                        ? 'bg-emerald-950/40 border-emerald-900/50'
+                        : entry.reviewStatus === 'INCORRECT'
+                        ? 'bg-rose-950/40 border-rose-900/50'
+                        : 'bg-slate-950/80 border-slate-800'
+                    }`}>
                       <div className="flex items-center gap-3 flex-wrap">
                         {/* Número de Asiento */}
                         <span className="font-mono font-extrabold px-3 py-1 rounded-xl bg-indigo-600/20 text-indigo-300 border border-indigo-500/30 text-xs flex items-center gap-1.5 print:bg-transparent print:border-black print:text-black">
@@ -2209,7 +2223,13 @@ export const PracticeView: React.FC = () => {
                     </div>
 
                     {/* Barra inferior del Asiento para añadir línea rápidamente */}
-                    <div className="px-4 py-2.5 bg-slate-950/30 border-t border-slate-800/60 flex flex-wrap items-center justify-between gap-2 no-print">
+                    <div className={`px-4 py-2.5 border-t transition-colors flex flex-wrap items-center justify-between gap-2 no-print ${
+                      entry.reviewStatus === 'CORRECT'
+                        ? 'bg-emerald-950/25 border-emerald-900/40'
+                        : entry.reviewStatus === 'INCORRECT'
+                        ? 'bg-rose-950/25 border-rose-900/40'
+                        : 'bg-slate-950/30 border-slate-800/60'
+                    }`}>
                       {entry.hasDeferredDates ? (
                         <div className="text-[11px] text-purple-300 flex items-center gap-1.5">
                           <CalendarPlus className="w-3.5 h-3.5 text-purple-400" />
@@ -2240,32 +2260,32 @@ export const PracticeView: React.FC = () => {
                           <span>+ Agregar otra cuenta a este asiento</span>
                         </button>
 
-                        {/* Cuadrados para marcar Tilde Verde (Correcto) o Tilde Roja (Incorrecto) al lado de "+ agregar otra cuenta" */}
-                        <div className="flex items-center gap-1.5 ml-1 pl-2 border-l border-slate-800">
+                        {/* Cuadrados para marcar Tilde Verde (Correcto) o Tilde Roja (Incorrecto) con efecto visual destacado */}
+                        <div className="flex items-center gap-1.5 ml-1 pl-2.5 border-l border-slate-800">
                           <button
                             type="button"
                             onClick={() => handleToggleEntryReviewStatus(entry.id, 'CORRECT')}
-                            className={`w-7 h-7 rounded-lg flex items-center justify-center transition border ${
+                            className={`w-8 h-8 rounded-xl flex items-center justify-center transition-all duration-200 cursor-pointer ${
                               entry.reviewStatus === 'CORRECT'
-                                ? 'bg-emerald-500/25 text-emerald-300 border-emerald-500 ring-2 ring-emerald-500/30 shadow-md shadow-emerald-950/60'
-                                : 'bg-slate-900 text-slate-500 border-slate-700 hover:text-emerald-400 hover:border-emerald-500/50 hover:bg-slate-850'
+                                ? 'bg-emerald-500 text-slate-950 border-2 border-emerald-300 shadow-[0_0_18px_rgba(16,185,129,0.6)] scale-110 ring-2 ring-emerald-400/50'
+                                : 'bg-slate-900/90 text-slate-500 border border-slate-700 hover:text-emerald-400 hover:border-emerald-500/60 hover:bg-emerald-950/30 active:scale-95'
                             }`}
                             title={entry.reviewStatus === 'CORRECT' ? 'Asiento marcado como Correcto (haz clic para desmarcar)' : 'Marcar asiento como Correcto (tilde verde)'}
                           >
-                            <Check className="w-4 h-4 stroke-[3]" />
+                            <Check className="w-4 h-4 stroke-[3.5]" />
                           </button>
 
                           <button
                             type="button"
                             onClick={() => handleToggleEntryReviewStatus(entry.id, 'INCORRECT')}
-                            className={`w-7 h-7 rounded-lg flex items-center justify-center transition border ${
+                            className={`w-8 h-8 rounded-xl flex items-center justify-center transition-all duration-200 cursor-pointer ${
                               entry.reviewStatus === 'INCORRECT'
-                                ? 'bg-rose-500/25 text-rose-300 border-rose-500 ring-2 ring-rose-500/30 shadow-md shadow-rose-950/60'
-                                : 'bg-slate-900 text-slate-500 border-slate-700 hover:text-rose-400 hover:border-rose-500/50 hover:bg-slate-850'
+                                ? 'bg-rose-600 text-white border-2 border-rose-300 shadow-[0_0_18px_rgba(244,63,94,0.6)] scale-110 ring-2 ring-rose-400/50'
+                                : 'bg-slate-900/90 text-slate-500 border border-slate-700 hover:text-rose-400 hover:border-rose-500/60 hover:bg-rose-950/30 active:scale-95'
                             }`}
                             title={entry.reviewStatus === 'INCORRECT' ? 'Asiento marcado como Incorrecto (haz clic para desmarcar)' : 'Marcar asiento como Incorrecto (tilde roja) y añadir anotaciones'}
                           >
-                            <X className="w-4 h-4 stroke-[3]" />
+                            <X className="w-4 h-4 stroke-[3.5]" />
                           </button>
                         </div>
                       </div>
