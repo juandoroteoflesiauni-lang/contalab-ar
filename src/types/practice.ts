@@ -92,6 +92,8 @@ export interface ManualJournalEntry {
   date: string; // Fecha principal de la operación / compra
   hasDeferredDates?: boolean; // Permite activar fechas diferidas entre partidas de este asiento
   lines: ManualJournalLine[];
+  reviewStatus?: 'CORRECT' | 'INCORRECT' | null; // Tilde verde (CORRECT) o tilde roja (INCORRECT)
+  reviewNotes?: string; // Anotaciones de por qué se hizo mal / correcciones
 }
 
 export interface ManualJournalRow {

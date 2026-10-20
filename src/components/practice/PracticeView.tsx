@@ -13,6 +13,8 @@ import {
   FileSpreadsheet, 
   Calendar,
   CalendarPlus,
+  Check,
+  X,
   Layers,
   ArrowRight,
   Sparkles,
@@ -719,6 +721,35 @@ export const PracticeView: React.FC = () => {
         journalEntries: (prev.journalEntries || []).filter(entry => entry.id !== entryId)
       }));
     }
+  };
+
+  // Alternar estado de revisión del asiento: Correcto ('CORRECT') o Incorrecto ('INCORRECT')
+  const handleToggleEntryReviewStatus = (entryId: string, status: 'CORRECT' | 'INCORRECT') => {
+    setPracticeData(prev => ({
+      ...prev,
+      journalEntries: (prev.journalEntries || []).map(entry => {
+        if (entry.id !== entryId) return entry;
+        const newStatus = entry.reviewStatus === status ? null : status;
+        return {
+          ...entry,
+          reviewStatus: newStatus
+        };
+      })
+    }));
+  };
+
+  // Actualizar anotaciones de corrección de un asiento marcado como incorrecto
+  const handleUpdateEntryReviewNotes = (entryId: string, notes: string) => {
+    setPracticeData(prev => ({
+      ...prev,
+      journalEntries: (prev.journalEntries || []).map(entry => {
+        if (entry.id !== entryId) return entry;
+        return {
+          ...entry,
+          reviewNotes: notes
+        };
+      })
+    }));
   };
 
   return (
@@ -1911,7 +1942,13 @@ export const PracticeView: React.FC = () => {
                 return (
                   <div 
                     key={entry.id} 
-                    className="rounded-2xl border border-slate-800 bg-slate-900/60 shadow-lg overflow-hidden print:border-black print:bg-white print:shadow-none print:break-inside-avoid"
+                    className={`rounded-2xl border transition-all shadow-lg overflow-hidden print:border-black print:bg-white print:shadow-none print:break-inside-avoid ${
+                      entry.reviewStatus === 'CORRECT'
+                        ? 'border-emerald-800/60 bg-slate-900/75 shadow-emerald-950/20'
+                        : entry.reviewStatus === 'INCORRECT'
+                        ? 'border-rose-800/60 bg-slate-900/75 shadow-rose-950/20'
+                        : 'border-slate-800 bg-slate-900/60'
+                    }`}
                   >
                     {/* Encabezado del Asiento (Número, Fecha Única o Principal, Opción Diferir Fechas y Estado de Balance) */}
                     <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 px-4 py-3 bg-slate-950/80 border-b border-slate-800 print:bg-slate-100 print:border-black">
@@ -1952,6 +1989,21 @@ export const PracticeView: React.FC = () => {
                           <CalendarPlus className="w-3.5 h-3.5 text-purple-400" />
                           <span>{entry.hasDeferredDates ? 'Fechas Diferidas: Activas' : '+ Diferir Fecha'}</span>
                         </button>
+
+                        {/* Badge indicador de estado de corrección */}
+                        {entry.reviewStatus === 'CORRECT' && (
+                          <span className="text-[11px] font-bold px-2 py-0.5 rounded-lg bg-emerald-950/80 text-emerald-300 border border-emerald-500/40 flex items-center gap-1 shadow-sm shadow-emerald-950/40 print:border-black print:text-black">
+                            <Check className="w-3.5 h-3.5 text-emerald-400 print:text-black stroke-[3]" />
+                            <span>Correcto</span>
+                          </span>
+                        )}
+
+                        {entry.reviewStatus === 'INCORRECT' && (
+                          <span className="text-[11px] font-bold px-2 py-0.5 rounded-lg bg-rose-950/80 text-rose-300 border border-rose-500/40 flex items-center gap-1 shadow-sm shadow-rose-950/40 print:border-black print:text-black">
+                            <X className="w-3.5 h-3.5 text-rose-400 print:text-black stroke-[3]" />
+                            <span>Incorrecto</span>
+                          </span>
+                        )}
                       </div>
 
                       {/* Estado de balance de este asiento + Acciones */}
@@ -2187,8 +2239,66 @@ export const PracticeView: React.FC = () => {
                           <Plus className="w-3.5 h-3.5" />
                           <span>+ Agregar otra cuenta a este asiento</span>
                         </button>
+
+                        {/* Cuadrados para marcar Tilde Verde (Correcto) o Tilde Roja (Incorrecto) al lado de "+ agregar otra cuenta" */}
+                        <div className="flex items-center gap-1.5 ml-1 pl-2 border-l border-slate-800">
+                          <button
+                            type="button"
+                            onClick={() => handleToggleEntryReviewStatus(entry.id, 'CORRECT')}
+                            className={`w-7 h-7 rounded-lg flex items-center justify-center transition border ${
+                              entry.reviewStatus === 'CORRECT'
+                                ? 'bg-emerald-500/25 text-emerald-300 border-emerald-500 ring-2 ring-emerald-500/30 shadow-md shadow-emerald-950/60'
+                                : 'bg-slate-900 text-slate-500 border-slate-700 hover:text-emerald-400 hover:border-emerald-500/50 hover:bg-slate-850'
+                            }`}
+                            title={entry.reviewStatus === 'CORRECT' ? 'Asiento marcado como Correcto (haz clic para desmarcar)' : 'Marcar asiento como Correcto (tilde verde)'}
+                          >
+                            <Check className="w-4 h-4 stroke-[3]" />
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => handleToggleEntryReviewStatus(entry.id, 'INCORRECT')}
+                            className={`w-7 h-7 rounded-lg flex items-center justify-center transition border ${
+                              entry.reviewStatus === 'INCORRECT'
+                                ? 'bg-rose-500/25 text-rose-300 border-rose-500 ring-2 ring-rose-500/30 shadow-md shadow-rose-950/60'
+                                : 'bg-slate-900 text-slate-500 border-slate-700 hover:text-rose-400 hover:border-rose-500/50 hover:bg-slate-850'
+                            }`}
+                            title={entry.reviewStatus === 'INCORRECT' ? 'Asiento marcado como Incorrecto (haz clic para desmarcar)' : 'Marcar asiento como Incorrecto (tilde roja) y añadir anotaciones'}
+                          >
+                            <X className="w-4 h-4 stroke-[3]" />
+                          </button>
+                        </div>
                       </div>
                     </div>
+
+                    {/* Sección de anotaciones de corrección cuando el asiento se marca como incorrecto */}
+                    {entry.reviewStatus === 'INCORRECT' && (
+                      <div className="px-4 py-3 bg-rose-950/20 border-t border-rose-900/40 no-print animate-in fade-in slide-in-from-top-1 duration-200">
+                        <div className="flex items-center justify-between gap-2 mb-1.5">
+                          <div className="flex items-center gap-1.5 text-rose-300 text-xs font-semibold">
+                            <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                            <span>Anotaciones de corrección (¿Por qué lo hice mal?):</span>
+                          </div>
+                          <span className="text-[10px] text-rose-400/80 font-mono">
+                            Auto-guardado con el asiento
+                          </span>
+                        </div>
+                        <textarea
+                          value={entry.reviewNotes || ''}
+                          onChange={(e) => handleUpdateEntryReviewNotes(entry.id, e.target.value)}
+                          placeholder="Escribe aquí las anotaciones de por qué estuvo mal (ej. 'Confundí Compras con Mercaderías', 'Olvidé registrar la bonificación del 25/10', 'Invertí las cuentas en el Debe/Haber')..."
+                          rows={2}
+                          className="w-full px-3 py-2 text-xs text-rose-100 placeholder-rose-400/50 bg-slate-950/90 border border-rose-900/50 rounded-xl focus:outline-none focus:border-rose-400 font-sans resize-y"
+                        />
+                      </div>
+                    )}
+
+                    {/* En impresión formal PDF: mostrar anotación de corrección si existe */}
+                    {entry.reviewStatus === 'INCORRECT' && entry.reviewNotes && (
+                      <div className="hidden print:block px-4 py-2 bg-slate-50 border-t border-black text-xs text-slate-800">
+                        <strong>Nota de corrección del asiento:</strong> {entry.reviewNotes}
+                      </div>
+                    )}
                   </div>
                 );
               })}
