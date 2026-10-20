@@ -1,6 +1,16 @@
 import { PracticeData } from '../types/practice';
 
 export const DEFAULT_PRACTICE_DATA: PracticeData = {
+  journalBooks: [
+    {
+      id: 'book_general',
+      name: 'Libro Diario General',
+      description: 'Libro principal de asientos contables',
+      createdAt: new Date().toISOString().slice(0, 10),
+      entries: []
+    }
+  ],
+  activeJournalBookId: 'book_general',
   journalEntries: [],
   journalRows: [],
   tAccounts: [

@@ -24,7 +24,9 @@ import {
   PlusCircle,
   HelpCircle,
   ArrowDownRight,
-  Printer
+  Printer,
+  ChevronDown,
+  FolderPlus
 } from 'lucide-react';
 import { 
   TAccount, 
@@ -39,6 +41,7 @@ import {
   ManualJournalRow,
   ManualJournalEntry,
   ManualJournalLine,
+  JournalBook,
   PracticeData 
 } from '../../types/practice';
 import { DEFAULT_PRACTICE_DATA } from '../../data/defaultPracticeData';
@@ -114,8 +117,35 @@ export const PracticeView: React.FC = () => {
             journalEntries = Array.from(map.values());
           }
 
+          // MULTI-LIBRO MIGRACIÓN Y CARGA RESILIENTE:
+          let journalBooks: JournalBook[] = Array.isArray(parsed.journalBooks) && parsed.journalBooks.length > 0
+            ? parsed.journalBooks
+            : [];
+
+          if (journalBooks.length === 0) {
+            // Migrar asientos existentes al "Libro Diario General" sin perder nada
+            journalBooks = [
+              {
+                id: 'book_general',
+                name: 'Libro Diario General',
+                description: 'Libro principal de asientos contables',
+                createdAt: new Date().toISOString().slice(0, 10),
+                entries: journalEntries
+              }
+            ];
+          }
+
+          let activeJournalBookId = parsed.activeJournalBookId;
+          if (!activeJournalBookId || !journalBooks.some(b => b.id === activeJournalBookId)) {
+            activeJournalBookId = journalBooks[0].id;
+          }
+
+          const activeBook = journalBooks.find(b => b.id === activeJournalBookId) || journalBooks[0];
+
           return {
-            journalEntries,
+            journalBooks,
+            activeJournalBookId,
+            journalEntries: activeBook.entries || [],
             journalRows: parsed.journalRows || [],
             tAccounts: Array.isArray(parsed.tAccounts) ? parsed.tAccounts : DEFAULT_PRACTICE_DATA.tAccounts,
             inventorySheets: Array.isArray(parsed.inventorySheets) ? parsed.inventorySheets : DEFAULT_PRACTICE_DATA.inventorySheets,
@@ -495,10 +525,99 @@ export const PracticeView: React.FC = () => {
   }, [activeGenericSheet]);
 
   /* =========================================================================================
-     4. LIBRO DIARIO MANUAL (AGRUPADO POR ASIENTO Y FECHA COMPARTIDA)
+     4. LIBRO DIARIO MANUAL: MÚLTIPLES LIBROS DIARIOS INDEPENDIENTES
      ========================================================================================= */
+
+  // Lista resiliente de libros diarios
+  const journalBooks: JournalBook[] = useMemo(() => {
+    if (practiceData.journalBooks && practiceData.journalBooks.length > 0) {
+      return practiceData.journalBooks;
+    }
+    return [
+      {
+        id: 'book_general',
+        name: 'Libro Diario General',
+        description: 'Libro principal de asientos contables',
+        createdAt: new Date().toISOString().slice(0, 10),
+        entries: practiceData.journalEntries || []
+      }
+    ];
+  }, [practiceData.journalBooks, practiceData.journalEntries]);
+
+  // ID del libro diario activo
+  const activeJournalBookId = practiceData.activeJournalBookId && journalBooks.some(b => b.id === practiceData.activeJournalBookId)
+    ? practiceData.activeJournalBookId
+    : journalBooks[0].id;
+
+  // Libro diario activo actual
+  const activeJournalBook = useMemo(() => {
+    return journalBooks.find(b => b.id === activeJournalBookId) || journalBooks[0];
+  }, [journalBooks, activeJournalBookId]);
+
+  // Estados de control para dropdown y modales de Libros Diarios
+  const [isBookDropdownOpen, setIsBookDropdownOpen] = useState(false);
+  const [isCreateBookModalOpen, setIsCreateBookModalOpen] = useState(false);
+  const [editingBook, setEditingBook] = useState<JournalBook | null>(null);
+
+  // Formulario para nuevo libro
+  const [newBookName, setNewBookName] = useState('');
+  const [newBookDesc, setNewBookDesc] = useState('');
+
+  // Formulario para editar libro existente
+  const [editBookName, setEditBookName] = useState('');
+  const [editBookDesc, setEditBookDesc] = useState('');
+
+  // Listener para cerrar dropdown al hacer click afuera
+  useEffect(() => {
+    if (!isBookDropdownOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest('#book-selector-dropdown-container')) {
+        setIsBookDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [isBookDropdownOpen]);
+
+  // Helper central para actualizar exclusivamente los asientos del libro diario activo
+  const updateActiveBookEntries = (updater: (prevEntries: ManualJournalEntry[]) => ManualJournalEntry[]) => {
+    setPracticeData(prev => {
+      const currentBooks = (prev.journalBooks && prev.journalBooks.length > 0)
+        ? prev.journalBooks
+        : [
+            {
+              id: 'book_general',
+              name: 'Libro Diario General',
+              description: 'Libro principal de asientos contables',
+              createdAt: new Date().toISOString().slice(0, 10),
+              entries: prev.journalEntries || []
+            }
+          ];
+
+      const targetBookId = prev.activeJournalBookId && currentBooks.some(b => b.id === prev.activeJournalBookId)
+        ? prev.activeJournalBookId
+        : currentBooks[0].id;
+
+      const currentTargetBook = currentBooks.find(b => b.id === targetBookId) || currentBooks[0];
+      const newEntries = updater(currentTargetBook.entries || []);
+
+      const updatedBooks = currentBooks.map(b => 
+        b.id === currentTargetBook.id ? { ...b, entries: newEntries } : b
+      );
+
+      return {
+        ...prev,
+        journalBooks: updatedBooks,
+        activeJournalBookId: targetBookId,
+        journalEntries: newEntries
+      };
+    });
+  };
+
+  // Cálculo de totales y balance del libro diario activo
   const journalTotals = useMemo(() => {
-    const entries = practiceData.journalEntries || [];
+    const entries = activeJournalBook?.entries || [];
     let totalDebit = 0;
     let totalCredit = 0;
     let totalLinesCount = 0;
@@ -523,329 +642,412 @@ export const PracticeView: React.FC = () => {
       entriesCount: entries.length, 
       linesCount: totalLinesCount 
     };
-  }, [practiceData.journalEntries]);
+  }, [activeJournalBook]);
 
-  // Crear un nuevo asiento con fecha independiente y líneas iniciales
-  const handleAddNewEntry = () => {
-    const entries = practiceData.journalEntries || [];
-    const nextEntry = entries.length > 0 
-      ? Math.max(...entries.map(e => e.entryNumber || 1)) + 1 
-      : 1;
-
-    const newDate = new Date().toISOString().slice(0, 10);
-    const newEntry: ManualJournalEntry = {
-      id: generateId('pj_entry'),
-      entryNumber: nextEntry,
-      date: newDate,
-      hasDeferredDates: false,
-      lines: [
-        {
-          id: generateId('pj_line'),
-          accountName: '',
-          detail: '',
-          debit: 0,
-          credit: 0,
-          date: newDate
-        },
-        {
-          id: generateId('pj_line'),
-          accountName: '',
-          detail: '',
-          debit: 0,
-          credit: 0,
-          date: newDate
-        }
-      ]
-    };
-
+  // Cambiar libro activo
+  const handleSelectBook = (bookId: string) => {
+    const targetBook = journalBooks.find(b => b.id === bookId);
+    if (!targetBook) return;
     setPracticeData(prev => ({
       ...prev,
-      journalEntries: [...(prev.journalEntries || []), newEntry]
+      activeJournalBookId: bookId,
+      journalEntries: targetBook.entries || []
     }));
+    setIsBookDropdownOpen(false);
+  };
+
+  // Abrir modal de creación de nuevo libro
+  const handleOpenCreateBookModal = () => {
+    setNewBookName(`Ejercicio ${journalBooks.length + 1} - `);
+    setNewBookDesc('');
+    setIsCreateBookModalOpen(true);
+    setIsBookDropdownOpen(false);
+  };
+
+  // Confirmar creación de nuevo libro
+  const handleConfirmCreateBook = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const trimmedName = newBookName.trim() || `Libro Diario #${journalBooks.length + 1}`;
+    const newBookId = generateId('jbook');
+    const newBook: JournalBook = {
+      id: newBookId,
+      name: trimmedName,
+      description: newBookDesc.trim() || undefined,
+      createdAt: new Date().toLocaleDateString('es-AR'),
+      entries: []
+    };
+
+    setPracticeData(prev => {
+      const currentBooks = (prev.journalBooks && prev.journalBooks.length > 0)
+        ? prev.journalBooks
+        : journalBooks;
+      return {
+        ...prev,
+        journalBooks: [...currentBooks, newBook],
+        activeJournalBookId: newBookId,
+        journalEntries: []
+      };
+    });
+
+    setIsCreateBookModalOpen(false);
+    setNewBookName('');
+    setNewBookDesc('');
+  };
+
+  // Abrir modal de edición de libro
+  const handleOpenEditBookModal = (book: JournalBook, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setEditingBook(book);
+    setEditBookName(book.name);
+    setEditBookDesc(book.description || '');
+    setIsBookDropdownOpen(false);
+  };
+
+  // Confirmar edición de libro
+  const handleConfirmEditBook = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!editingBook) return;
+    const trimmedName = editBookName.trim() || editingBook.name;
+    const trimmedDesc = editBookDesc.trim() || undefined;
+
+    setPracticeData(prev => {
+      const books = (prev.journalBooks && prev.journalBooks.length > 0) ? prev.journalBooks : journalBooks;
+      return {
+        ...prev,
+        journalBooks: books.map(b => b.id === editingBook.id ? {
+          ...b,
+          name: trimmedName,
+          description: trimmedDesc
+        } : b)
+      };
+    });
+
+    setEditingBook(null);
+  };
+
+  // Eliminar un libro
+  const handleDeleteBook = (bookId: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    const bookToDelete = journalBooks.find(b => b.id === bookId);
+    if (!bookToDelete) return;
+
+    if (journalBooks.length <= 1) {
+      alert('Debes conservar al menos un Libro Diario activo en tu práctica.');
+      return;
+    }
+
+    const entriesCount = bookToDelete.entries?.length || 0;
+    let message = `¿Estás seguro de que deseas eliminar el Libro Diario "${bookToDelete.name}"?`;
+    if (entriesCount > 0) {
+      message = `⚠️ ATENCIÓN: El Libro Diario "${bookToDelete.name}" contiene ${entriesCount} asiento(s) contable(s).\n\nSi continúas, se eliminarán permanentemente el libro y todos sus registros.\n\n¿Deseas eliminarlo de todas formas?`;
+    }
+
+    if (window.confirm(message)) {
+      setPracticeData(prev => {
+        const books = (prev.journalBooks && prev.journalBooks.length > 0) ? prev.journalBooks : journalBooks;
+        const remaining = books.filter(b => b.id !== bookId);
+        const newActiveId = prev.activeJournalBookId === bookId ? remaining[0].id : (prev.activeJournalBookId || remaining[0].id);
+        const newActiveBook = remaining.find(b => b.id === newActiveId) || remaining[0];
+
+        return {
+          ...prev,
+          journalBooks: remaining,
+          activeJournalBookId: newActiveId,
+          journalEntries: newActiveBook?.entries || []
+        };
+      });
+      setIsBookDropdownOpen(false);
+    }
+  };
+
+  // Descargar o imprimir PDF del libro activo
+  const handlePrintActiveBook = () => {
+    const entries = activeJournalBook?.entries || [];
+    if (entries.length === 0) {
+      alert(`El Libro Diario "${activeJournalBook?.name || 'activo'}" no tiene asientos registrados para exportar.`);
+      return;
+    }
+    window.print();
+  };
+
+  // Crear un nuevo asiento con fecha independiente y líneas iniciales en el libro activo
+  const handleAddNewEntry = () => {
+    updateActiveBookEntries(entries => {
+      const nextEntry = entries.length > 0 
+        ? Math.max(...entries.map(e => e.entryNumber || 1)) + 1 
+        : 1;
+
+      const newDate = new Date().toISOString().slice(0, 10);
+      const newEntry: ManualJournalEntry = {
+        id: generateId('pj_entry'),
+        entryNumber: nextEntry,
+        date: newDate,
+        hasDeferredDates: false,
+        lines: [
+          {
+            id: generateId('pj_line'),
+            accountName: '',
+            detail: '',
+            debit: 0,
+            credit: 0,
+            date: newDate
+          },
+          {
+            id: generateId('pj_line'),
+            accountName: '',
+            detail: '',
+            debit: 0,
+            credit: 0,
+            date: newDate
+          }
+        ]
+      };
+      return [...entries, newEntry];
+    });
   };
 
   // Modificar la fecha única compartida / principal de un asiento específico
   const handleUpdateEntryDate = (entryId: string, newDate: string) => {
-    setPracticeData(prev => ({
-      ...prev,
-      journalEntries: (prev.journalEntries || []).map(entry => {
-        if (entry.id !== entryId) return entry;
-        const oldMainDate = entry.date;
-        return {
-          ...entry,
-          date: newDate,
-          lines: entry.lines.map(line => {
-            // Si la línea no tenía fecha propia o tenía la misma fecha principal anterior, se actualiza
-            if (!line.date || line.date === oldMainDate) {
-              return { ...line, date: newDate };
-            }
-            return line;
-          })
-        };
-      })
+    updateActiveBookEntries(entries => entries.map(entry => {
+      if (entry.id !== entryId) return entry;
+      const oldMainDate = entry.date;
+      return {
+        ...entry,
+        date: newDate,
+        lines: entry.lines.map(line => {
+          if (!line.date || line.date === oldMainDate) {
+            return { ...line, date: newDate };
+          }
+          return line;
+        })
+      };
     }));
   };
 
   // Activar o desactivar fechas diferidas dentro de un asiento
   const handleToggleDeferredDates = (entryId: string) => {
-    setPracticeData(prev => ({
-      ...prev,
-      journalEntries: (prev.journalEntries || []).map(entry => {
-        if (entry.id !== entryId) return entry;
-        const willEnable = !entry.hasDeferredDates;
-        return {
-          ...entry,
-          hasDeferredDates: willEnable,
-          lines: entry.lines.map(line => ({
-            ...line,
-            // Al activar, cada partida asegura tener fecha definida (por defecto la principal)
-            date: willEnable ? (line.date || entry.date) : entry.date
-          }))
-        };
-      })
+    updateActiveBookEntries(entries => entries.map(entry => {
+      if (entry.id !== entryId) return entry;
+      const willEnable = !entry.hasDeferredDates;
+      return {
+        ...entry,
+        hasDeferredDates: willEnable,
+        lines: entry.lines.map(line => ({
+          ...line,
+          date: willEnable ? (line.date || entry.date) : entry.date
+        }))
+      };
     }));
   };
 
   // Agregar una línea contable adicional al mismo asiento
   const handleAddLineToEntry = (entryId: string, specificDate?: string) => {
-    setPracticeData(prev => ({
-      ...prev,
-      journalEntries: (prev.journalEntries || []).map(entry => {
-        if (entry.id !== entryId) return entry;
-        const newLine: ManualJournalLine = {
-          id: generateId('pj_line'),
-          accountName: '',
-          detail: '',
-          debit: 0,
-          credit: 0,
-          date: specificDate || (entry.hasDeferredDates ? entry.date : undefined)
-        };
+    updateActiveBookEntries(entries => entries.map(entry => {
+      if (entry.id !== entryId) return entry;
+      const newLine: ManualJournalLine = {
+        id: generateId('pj_line'),
+        accountName: '',
+        detail: '',
+        debit: 0,
+        credit: 0,
+        date: specificDate || (entry.hasDeferredDates ? entry.date : undefined)
+      };
 
-        return {
-          ...entry,
-          lines: [...entry.lines, newLine]
-        };
-      })
+      return {
+        ...entry,
+        lines: [...entry.lines, newLine]
+      };
     }));
   };
 
-  // Agregar una línea contable con fecha diferida (ej. bonificación o ajuste posterior)
+  // Agregar una línea contable con fecha diferida
   const handleAddDeferredLine = (entryId: string) => {
-    setPracticeData(prev => ({
-      ...prev,
-      journalEntries: (prev.journalEntries || []).map(entry => {
-        if (entry.id !== entryId) return entry;
-        
-        // Buscar la última fecha diferida que ya tenga el asiento, o usar la fecha principal
-        const deferredLines = entry.lines.filter(l => l.date && l.date !== entry.date);
-        let defaultDate = entry.date;
-        if (deferredLines.length > 0) {
-          defaultDate = deferredLines[deferredLines.length - 1].date || entry.date;
-        }
+    updateActiveBookEntries(entries => entries.map(entry => {
+      if (entry.id !== entryId) return entry;
+      const deferredLines = entry.lines.filter(l => l.date && l.date !== entry.date);
+      let defaultDate = entry.date;
+      if (deferredLines.length > 0) {
+        defaultDate = deferredLines[deferredLines.length - 1].date || entry.date;
+      }
 
-        const newLine: ManualJournalLine = {
-          id: generateId('pj_line'),
-          accountName: '',
-          detail: '',
-          debit: 0,
-          credit: 0,
-          date: defaultDate
-        };
+      const newLine: ManualJournalLine = {
+        id: generateId('pj_line'),
+        accountName: '',
+        detail: '',
+        debit: 0,
+        credit: 0,
+        date: defaultDate
+      };
 
-        return {
-          ...entry,
-          hasDeferredDates: true,
-          lines: [...entry.lines, newLine]
-        };
-      })
+      return {
+        ...entry,
+        hasDeferredDates: true,
+        lines: [...entry.lines, newLine]
+      };
     }));
   };
 
   // Actualizar un campo de una línea específica dentro de un asiento
   const handleUpdateEntryLine = (entryId: string, lineId: string, field: keyof ManualJournalLine, value: any) => {
-    setPracticeData(prev => ({
-      ...prev,
-      journalEntries: (prev.journalEntries || []).map(entry => {
-        if (entry.id !== entryId) return entry;
+    updateActiveBookEntries(entries => entries.map(entry => {
+      if (entry.id !== entryId) return entry;
 
-        let willHaveDeferred = entry.hasDeferredDates;
-        if (field === 'date' && value && value !== entry.date) {
-          willHaveDeferred = true;
-        }
+      let willHaveDeferred = entry.hasDeferredDates;
+      if (field === 'date' && value && value !== entry.date) {
+        willHaveDeferred = true;
+      }
 
-        return {
-          ...entry,
-          hasDeferredDates: willHaveDeferred,
-          lines: entry.lines.map(line => {
-            if (line.id !== lineId) return line;
+      return {
+        ...entry,
+        hasDeferredDates: willHaveDeferred,
+        lines: entry.lines.map(line => {
+          if (line.id !== lineId) return line;
 
-            let parsedVal = value;
-            if (field === 'debit' || field === 'credit') {
-              if (value === '' || value === null || value === undefined) {
-                parsedVal = 0;
-              } else {
-                const clean = String(value).replace(',', '.');
-                parsedVal = isNaN(Number(clean)) ? 0 : Number(clean);
-              }
+          let parsedVal = value;
+          if (field === 'debit' || field === 'credit') {
+            if (value === '' || value === null || value === undefined) {
+              parsedVal = 0;
+            } else {
+              const clean = String(value).replace(',', '.');
+              parsedVal = isNaN(Number(clean)) ? 0 : Number(clean);
             }
+          }
 
-            return {
-              ...line,
-              [field]: parsedVal
-            };
-          })
-        };
-      })
+          return {
+            ...line,
+            [field]: parsedVal
+          };
+        })
+      };
     }));
   };
 
   // Eliminar una línea contable de un asiento
   const handleDeleteEntryLine = (entryId: string, lineId: string) => {
-    setPracticeData(prev => ({
-      ...prev,
-      journalEntries: (prev.journalEntries || []).map(entry => {
-        if (entry.id !== entryId) return entry;
-        return {
-          ...entry,
-          lines: entry.lines.filter(line => line.id !== lineId)
-        };
-      })
+    updateActiveBookEntries(entries => entries.map(entry => {
+      if (entry.id !== entryId) return entry;
+      return {
+        ...entry,
+        lines: entry.lines.filter(line => line.id !== lineId)
+      };
     }));
   };
 
   // Eliminar un asiento completo con todas sus líneas
   const handleDeleteEntry = (entryId: string, entryNumber: number) => {
     if (window.confirm(`¿Estás seguro de eliminar el Asiento Nº ${entryNumber} y todas sus cuentas asociadas?`)) {
-      setPracticeData(prev => ({
-        ...prev,
-        journalEntries: (prev.journalEntries || []).filter(entry => entry.id !== entryId)
-      }));
+      updateActiveBookEntries(entries => entries.filter(entry => entry.id !== entryId));
     }
   };
 
   // Alternar estado de revisión del asiento: Correcto ('CORRECT') o Incorrecto ('INCORRECT')
   const handleToggleEntryReviewStatus = (entryId: string, status: 'CORRECT' | 'INCORRECT') => {
-    setPracticeData(prev => ({
-      ...prev,
-      journalEntries: (prev.journalEntries || []).map(entry => {
-        if (entry.id !== entryId) return entry;
-        const newStatus = entry.reviewStatus === status ? null : status;
-        let correctionLines = entry.correctionLines;
-        if (newStatus === 'INCORRECT' && (!correctionLines || correctionLines.length === 0)) {
-          correctionLines = [
-            {
-              id: generateId('pj_corr_line'),
-              accountName: '',
-              detail: '',
-              debit: 0,
-              credit: 0
-            },
-            {
-              id: generateId('pj_corr_line'),
-              accountName: '',
-              detail: '',
-              debit: 0,
-              credit: 0
-            }
-          ];
-        }
-        return {
-          ...entry,
-          reviewStatus: newStatus,
-          correctionLines
-        };
-      })
+    updateActiveBookEntries(entries => entries.map(entry => {
+      if (entry.id !== entryId) return entry;
+      const newStatus = entry.reviewStatus === status ? null : status;
+      let correctionLines = entry.correctionLines;
+      if (newStatus === 'INCORRECT' && (!correctionLines || correctionLines.length === 0)) {
+        correctionLines = [
+          {
+            id: generateId('pj_corr_line'),
+            accountName: '',
+            detail: '',
+            debit: 0,
+            credit: 0
+          },
+          {
+            id: generateId('pj_corr_line'),
+            accountName: '',
+            detail: '',
+            debit: 0,
+            credit: 0
+          }
+        ];
+      }
+      return {
+        ...entry,
+        reviewStatus: newStatus,
+        correctionLines
+      };
     }));
   };
 
   // Actualizar anotaciones de corrección de un asiento marcado como incorrecto
   const handleUpdateEntryReviewNotes = (entryId: string, notes: string) => {
-    setPracticeData(prev => ({
-      ...prev,
-      journalEntries: (prev.journalEntries || []).map(entry => {
-        if (entry.id !== entryId) return entry;
-        return {
-          ...entry,
-          reviewNotes: notes
-        };
-      })
+    updateActiveBookEntries(entries => entries.map(entry => {
+      if (entry.id !== entryId) return entry;
+      return {
+        ...entry,
+        reviewNotes: notes
+      };
     }));
   };
 
   // Agregar una línea al asiento en blanco de corrección
   const handleAddCorrectionLine = (entryId: string) => {
-    setPracticeData(prev => ({
-      ...prev,
-      journalEntries: (prev.journalEntries || []).map(entry => {
-        if (entry.id !== entryId) return entry;
-        const currentLines = (entry.correctionLines && entry.correctionLines.length > 0)
-          ? entry.correctionLines
-          : [
-              { id: generateId('pj_corr_line'), accountName: '', detail: '', debit: 0, credit: 0 },
-              { id: generateId('pj_corr_line'), accountName: '', detail: '', debit: 0, credit: 0 },
-            ];
-        const newLine: ManualJournalLine = {
-          id: generateId('pj_corr_line'),
-          accountName: '',
-          detail: '',
-          debit: 0,
-          credit: 0
-        };
-        return {
-          ...entry,
-          correctionLines: [...currentLines, newLine]
-        };
-      })
+    updateActiveBookEntries(entries => entries.map(entry => {
+      if (entry.id !== entryId) return entry;
+      const currentLines = (entry.correctionLines && entry.correctionLines.length > 0)
+        ? entry.correctionLines
+        : [
+            { id: generateId('pj_corr_line'), accountName: '', detail: '', debit: 0, credit: 0 },
+            { id: generateId('pj_corr_line'), accountName: '', detail: '', debit: 0, credit: 0 },
+          ];
+      const newLine: ManualJournalLine = {
+        id: generateId('pj_corr_line'),
+        accountName: '',
+        detail: '',
+        debit: 0,
+        credit: 0
+      };
+      return {
+        ...entry,
+        correctionLines: [...currentLines, newLine]
+      };
     }));
   };
 
   // Modificar un campo de una línea del asiento de corrección
   const handleUpdateCorrectionLine = (entryId: string, lineId: string, field: keyof ManualJournalLine, value: any) => {
-    setPracticeData(prev => ({
-      ...prev,
-      journalEntries: (prev.journalEntries || []).map(entry => {
-        if (entry.id !== entryId) return entry;
-        const currentLines = (entry.correctionLines && entry.correctionLines.length > 0)
-          ? entry.correctionLines
-          : [
-              { id: `${entry.id}_corr_1`, accountName: '', detail: '', debit: 0, credit: 0 },
-              { id: `${entry.id}_corr_2`, accountName: '', detail: '', debit: 0, credit: 0 },
-            ];
+    updateActiveBookEntries(entries => entries.map(entry => {
+      if (entry.id !== entryId) return entry;
+      const currentLines = (entry.correctionLines && entry.correctionLines.length > 0)
+        ? entry.correctionLines
+        : [
+            { id: `${entry.id}_corr_1`, accountName: '', detail: '', debit: 0, credit: 0 },
+            { id: `${entry.id}_corr_2`, accountName: '', detail: '', debit: 0, credit: 0 },
+          ];
 
-        return {
-          ...entry,
-          correctionLines: currentLines.map(line => {
-            if (line.id !== lineId) return line;
-            let parsedVal = value;
-            if (field === 'debit' || field === 'credit') {
-              if (value === '' || value === null || value === undefined) {
-                parsedVal = 0;
-              } else {
-                const clean = String(value).replace(',', '.');
-                parsedVal = isNaN(Number(clean)) ? 0 : Number(clean);
-              }
+      return {
+        ...entry,
+        correctionLines: currentLines.map(line => {
+          if (line.id !== lineId) return line;
+          let parsedVal = value;
+          if (field === 'debit' || field === 'credit') {
+            if (value === '' || value === null || value === undefined) {
+              parsedVal = 0;
+            } else {
+              const clean = String(value).replace(',', '.');
+              parsedVal = isNaN(Number(clean)) ? 0 : Number(clean);
             }
-            return {
-              ...line,
-              [field]: parsedVal
-            };
-          })
-        };
-      })
+          }
+          return {
+            ...line,
+            [field]: parsedVal
+          };
+        })
+      };
     }));
   };
 
   // Eliminar una línea del asiento de corrección
   const handleDeleteCorrectionLine = (entryId: string, lineId: string) => {
-    setPracticeData(prev => ({
-      ...prev,
-      journalEntries: (prev.journalEntries || []).map(entry => {
-        if (entry.id !== entryId) return entry;
-        return {
-          ...entry,
-          correctionLines: (entry.correctionLines || []).filter(line => line.id !== lineId)
-        };
-      })
+    updateActiveBookEntries(entries => entries.map(entry => {
+      if (entry.id !== entryId) return entry;
+      return {
+        ...entry,
+        correctionLines: (entry.correctionLines || []).filter(line => line.id !== lineId)
+      };
     }));
   };
 
@@ -962,7 +1164,7 @@ export const PracticeView: React.FC = () => {
           <BookOpen className="w-4 h-4" />
           <span>3. Libro Diario Manual</span>
           <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-black/40 text-indigo-200 font-mono">
-            {practiceData.journalEntries?.length || 0} asientos
+            {journalBooks.length > 1 ? `${journalBooks.length} libros (${activeJournalBook.entries.length} as.)` : `${activeJournalBook.entries.length} asientos`}
           </span>
         </button>
       </div>
@@ -1963,25 +2165,165 @@ export const PracticeView: React.FC = () => {
           </div>
 
           {/* Barra de Acciones y Explicación */}
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 no-print">
+          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 no-print">
             <div>
-              <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                <BookOpen className="w-4 h-4 text-indigo-400" />
-                Asientos Contables Registrados
-              </h3>
-              <p className="text-xs text-slate-400 mt-0.5">
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  <BookOpen className="w-4 h-4 text-indigo-400" />
+                  <span>Asientos Contables Registrados</span>
+                </h3>
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">
+                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse"></span>
+                  <span className="max-w-[200px] sm:max-w-xs truncate">{activeJournalBook.name}</span>
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 mt-1 max-w-2xl">
+                {activeJournalBook.description ? (
+                  <span className="text-indigo-200 font-medium">{activeJournalBook.description} • </span>
+                ) : null}
                 Cada asiento comparte una <strong>única fecha editable</strong> para todas sus cuentas. Puedes agregar tantas líneas como necesites a un asiento o crear nuevos asientos con fecha independiente.
               </p>
             </div>
-            <div className="flex items-center gap-2">
+
+            <div className="flex items-center gap-2 flex-wrap">
+              {/* SELECTOR DESPLEGABLE DE LIBROS DIARIOS */}
+              <div className="relative" id="book-selector-dropdown-container">
+                <button
+                  type="button"
+                  onClick={() => setIsBookDropdownOpen(prev => !prev)}
+                  className="flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-800/90 hover:bg-slate-700/90 text-slate-200 text-xs font-semibold border border-slate-700 transition shadow-sm max-w-[260px] sm:max-w-[320px]"
+                  title="Seleccionar, administrar o crear Libros Diarios"
+                >
+                  <BookOpen className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                  <span className="truncate font-medium text-slate-100">{activeJournalBook.name}</span>
+                  <span className="text-[10px] px-1.5 py-0.2 rounded-md bg-slate-900 text-indigo-300 border border-slate-700/60 font-mono shrink-0">
+                    {activeJournalBook.entries.length} as.
+                  </span>
+                  <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform duration-200 shrink-0 ${isBookDropdownOpen ? 'rotate-180 text-white' : ''}`} />
+                </button>
+
+                {/* Menú Desplegable */}
+                {isBookDropdownOpen && (
+                  <div className="absolute right-0 top-full mt-2 w-80 sm:w-96 rounded-2xl bg-slate-900 border border-slate-700/80 shadow-2xl z-50 p-2.5 space-y-2 animate-in fade-in slide-in-from-top-2 duration-150">
+                    {/* Header del dropdown */}
+                    <div className="flex items-center justify-between px-2 py-1 border-b border-slate-800">
+                      <div className="flex items-center gap-1.5 text-[11px] font-bold text-slate-300 uppercase tracking-wider">
+                        <span>Libros Diarios</span>
+                        <span className="px-1.5 py-0.2 rounded-full bg-slate-800 text-indigo-300 font-mono text-[10px]">
+                          {journalBooks.length}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleOpenCreateBookModal}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 text-[11px] font-semibold transition"
+                      >
+                        <Plus className="w-3 h-3" />
+                        <span>Nuevo Libro</span>
+                      </button>
+                    </div>
+
+                    {/* Lista scrolleable de libros */}
+                    <div className="max-h-72 overflow-y-auto space-y-1.5 pr-1">
+                      {journalBooks.map(book => {
+                        const isActive = book.id === activeJournalBook.id;
+                        const entriesCount = book.entries?.length || 0;
+
+                        return (
+                          <div
+                            key={book.id}
+                            onClick={() => handleSelectBook(book.id)}
+                            className={`group relative rounded-xl p-2.5 transition flex items-start justify-between gap-2.5 cursor-pointer border ${
+                              isActive
+                                ? 'bg-indigo-950/40 border-indigo-500/50 text-white shadow-sm ring-1 ring-indigo-500/30'
+                                : 'bg-slate-950/40 hover:bg-slate-800/60 border-slate-800/80 text-slate-300 hover:text-white'
+                            }`}
+                          >
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2">
+                                {isActive ? (
+                                  <div className="w-4 h-4 rounded-full bg-indigo-500/20 text-indigo-400 flex items-center justify-center shrink-0 border border-indigo-500/40">
+                                    <Check className="w-2.5 h-2.5 stroke-[3]" />
+                                  </div>
+                                ) : (
+                                  <div className="w-4 h-4 rounded-full bg-slate-800 text-slate-500 flex items-center justify-center shrink-0">
+                                    <BookOpen className="w-2.5 h-2.5" />
+                                  </div>
+                                )}
+                                <span className="font-bold text-xs truncate">
+                                  {book.name}
+                                </span>
+                              </div>
+
+                              {book.description && (
+                                <p className="text-[11px] text-slate-400 italic line-clamp-1 mt-1 pl-6">
+                                  {book.description}
+                                </p>
+                              )}
+
+                              <div className="flex items-center gap-2 mt-1.5 pl-6 text-[10px] text-slate-500 font-mono">
+                                <span>Creado: {book.createdAt || 'Reciente'}</span>
+                                <span>•</span>
+                                <span className={`px-1.5 py-0.2 rounded font-semibold ${
+                                  entriesCount > 0 ? 'bg-indigo-950 text-indigo-300 border border-indigo-800/50' : 'bg-slate-900 text-slate-500'
+                                }`}>
+                                  {entriesCount} {entriesCount === 1 ? 'asiento' : 'asientos'}
+                                </span>
+                              </div>
+                            </div>
+
+                            {/* Botones de acción (Editar y Eliminar) */}
+                            <div className="flex items-center gap-1 shrink-0 pt-0.5">
+                              <button
+                                type="button"
+                                onClick={(e) => handleOpenEditBookModal(book, e)}
+                                className="p-1 rounded-md text-slate-400 hover:text-indigo-300 hover:bg-slate-800 transition"
+                                title="Cambiar nombre y descripción"
+                              >
+                                <Edit2 className="w-3.5 h-3.5" />
+                              </button>
+                              {journalBooks.length > 1 && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => handleDeleteBook(book.id, e)}
+                                  className="p-1 rounded-md text-slate-500 hover:text-rose-400 hover:bg-rose-950/40 transition"
+                                  title="Eliminar este Libro Diario"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Botón inferior "+ Crear nuevo Libro Diario" */}
+                    <div className="pt-1.5 border-t border-slate-800">
+                      <button
+                        type="button"
+                        onClick={handleOpenCreateBookModal}
+                        className="w-full py-2 px-3 rounded-xl bg-slate-950 hover:bg-slate-800/80 text-indigo-300 hover:text-indigo-200 border border-indigo-500/20 text-xs font-semibold flex items-center justify-center gap-1.5 transition"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Crear nuevo Libro Diario</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Botón Descargar / Imprimir PDF */}
               <button
-                onClick={() => window.print()}
+                onClick={handlePrintActiveBook}
                 className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition shadow-sm"
                 title="Descargar reporte del Libro Diario en PDF o imprimir"
               >
                 <Printer className="w-3.5 h-3.5 text-cyan-400" />
                 <span className="hidden sm:inline">Descargar / Imprimir PDF</span>
               </button>
+
+              {/* Botón + Nuevo Asiento */}
               <button
                 onClick={handleAddNewEntry}
                 className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-md shadow-indigo-600/20 transition"
@@ -1994,14 +2336,27 @@ export const PracticeView: React.FC = () => {
 
           {/* Encabezado formal visible solo al Imprimir / Guardar como PDF */}
           <div className="hidden print:block mb-4 pb-3 border-b-2 border-slate-900">
-            <div className="flex justify-between items-center">
+            <div className="flex justify-between items-start">
               <div>
-                <h1 className="text-xl font-extrabold text-black uppercase tracking-tight">Libro Diario Contable</h1>
-                <p className="text-xs text-slate-700 font-medium">Sistemas de Información Contable • Registro por Operaciones Asentadas</p>
+                <div className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">ContaLab AR • Ejercicio Contable</div>
+                <h1 className="text-xl font-extrabold text-black uppercase tracking-tight">
+                  {activeJournalBook.name}
+                </h1>
+                {activeJournalBook.description && (
+                  <p className="text-xs text-slate-700 italic mt-0.5 max-w-xl">
+                    {activeJournalBook.description}
+                  </p>
+                )}
+                <div className="text-[11px] text-slate-600 mt-1">
+                  Libro Diario • Registro de Operaciones y Partida Doble
+                </div>
               </div>
               <div className="text-right text-xs text-slate-800">
                 <div className="font-semibold">Fecha de Emisión: {new Date().toLocaleDateString('es-AR')}</div>
-                <div className="font-bold text-emerald-800">
+                {activeJournalBook.createdAt && (
+                  <div className="text-[11px] text-slate-600">Fecha de Creación: {activeJournalBook.createdAt}</div>
+                )}
+                <div className="font-bold text-emerald-800 mt-1">
                   {journalTotals.isBalanced ? 'Partida Doble Cuadrada (Debe = Haber)' : `Diferencia: ${formatCurrency(journalTotals.difference)}`}
                 </div>
               </div>
@@ -2009,15 +2364,18 @@ export const PracticeView: React.FC = () => {
           </div>
 
           {/* Lista de Asientos Contables Agrupados */}
-          {(!practiceData.journalEntries || practiceData.journalEntries.length === 0) ? (
+          {(!activeJournalBook.entries || activeJournalBook.entries.length === 0) ? (
             <div className="py-16 text-center rounded-2xl border-2 border-dashed border-slate-800 bg-slate-900/40 p-8 space-y-4">
               <div className="w-12 h-12 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 flex items-center justify-center mx-auto">
                 <BookOpen className="w-6 h-6" />
               </div>
               <div>
-                <h4 className="text-base font-bold text-white">No hay asientos contables registrados</h4>
+                <h4 className="text-base font-bold text-white">No hay asientos contables en "{activeJournalBook.name}"</h4>
                 <p className="text-xs text-slate-400 max-w-md mx-auto mt-1">
-                  Comienza creando tu primer asiento contable con su fecha única compartida y agrupa debajo todas las cuentas pertenecientes a esa operación.
+                  {activeJournalBook.description ? (
+                    <span className="block mb-1 text-slate-300 font-medium">Consigna: {activeJournalBook.description}</span>
+                  ) : null}
+                  Comienza creando tu primer asiento contable en este libro con su fecha única compartida y agrupa debajo todas las cuentas pertenecientes a esa operación.
                 </p>
               </div>
               <button
@@ -2025,12 +2383,12 @@ export const PracticeView: React.FC = () => {
                 className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-lg shadow-indigo-600/30 transition"
               >
                 <Plus className="w-4 h-4" />
-                <span>Crear Asiento Nº 1</span>
+                <span>Crear Asiento Nº 1 en este Libro</span>
               </button>
             </div>
           ) : (
             <div className="space-y-6">
-              {practiceData.journalEntries.map((entry) => {
+              {activeJournalBook.entries.map((entry) => {
                 const entryDebit = round2(entry.lines.reduce((s, l) => s + (Number(l.debit) || 0), 0));
                 const entryCredit = round2(entry.lines.reduce((s, l) => s + (Number(l.credit) || 0), 0));
                 const entryDiff = round2(Math.abs(entryDebit - entryCredit));
@@ -2623,10 +2981,10 @@ export const PracticeView: React.FC = () => {
           )}
 
           {/* Botones al pie del Libro Diario */}
-          {practiceData.journalEntries && practiceData.journalEntries.length > 0 && (
+          {activeJournalBook.entries && activeJournalBook.entries.length > 0 && (
             <div className="flex flex-col sm:flex-row justify-between items-center gap-3 pt-2 no-print">
               <button
-                onClick={() => window.print()}
+                onClick={handlePrintActiveBook}
                 className="text-xs text-slate-400 hover:text-white flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800 transition"
               >
                 <Printer className="w-3.5 h-3.5 text-cyan-400" />
@@ -2646,7 +3004,7 @@ export const PracticeView: React.FC = () => {
           {/* Resumen Final en Impresión PDF */}
           <div className="hidden print:block mt-6 pt-3 border-t-2 border-black font-mono text-xs">
             <div className="flex justify-between items-center font-bold">
-              <span>TOTAL GENERAL DEL LIBRO DIARIO:</span>
+              <span>TOTAL DEL {activeJournalBook.name.toUpperCase()}:</span>
               <div className="flex gap-8">
                 <span>TOTAL DEBE: {formatCurrency(journalTotals.totalDebit)}</span>
                 <span>TOTAL HABER: {formatCurrency(journalTotals.totalCredit)}</span>
@@ -2654,6 +3012,168 @@ export const PracticeView: React.FC = () => {
             </div>
           </div>
 
+        </div>
+      )}
+
+      {/* MODAL: CREAR NUEVO LIBRO DIARIO */}
+      {isCreateBookModalOpen && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in duration-150">
+          <div className="w-full max-w-md rounded-2xl bg-slate-900 border border-slate-800 p-6 shadow-2xl space-y-4 animate-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-indigo-600/20 border border-indigo-500/30 text-indigo-400 flex items-center justify-center">
+                  <BookOpen className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white">Crear nuevo Libro Diario</h3>
+                  <p className="text-[11px] text-slate-400">Espacio de trabajo independiente para tus ejercicios</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsCreateBookModalOpen(false)}
+                className="text-slate-500 hover:text-white p-1 rounded-lg transition"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleConfirmCreateBook} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                  Nombre del libro <span className="text-indigo-400">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  autoFocus
+                  value={newBookName}
+                  onChange={(e) => setNewBookName(e.target.value)}
+                  placeholder="ej. Ejercicio 1 - Compra y venta de mercaderías"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 focus:outline-none focus:border-indigo-500 text-xs text-white placeholder-slate-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                  Descripción o consignas del ejercicio <span className="text-slate-500 font-normal">(opcional)</span>
+                </label>
+                <textarea
+                  rows={2}
+                  value={newBookDesc}
+                  onChange={(e) => setNewBookDesc(e.target.value)}
+                  placeholder="ej. Asientos prácticos de compras a plazo con bonificación diferida e IVA..."
+                  className="w-full px-3.5 py-2 rounded-xl bg-slate-950 border border-slate-800 focus:outline-none focus:border-indigo-500 text-xs text-white placeholder-slate-500 resize-y"
+                />
+              </div>
+
+              {/* Fecha de creación asignada automáticamente */}
+              <div className="flex items-center justify-between px-3.5 py-2.5 rounded-xl bg-slate-950/80 border border-slate-800 text-xs">
+                <span className="text-slate-400 flex items-center gap-1.5">
+                  <Calendar className="w-3.5 h-3.5 text-indigo-400" />
+                  Fecha de creación (asignada automáticamente):
+                </span>
+                <span className="font-mono text-indigo-300 font-semibold">
+                  {new Date().toLocaleDateString('es-AR')}
+                </span>
+              </div>
+
+              <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setIsCreateBookModalOpen(false)}
+                  className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-400 hover:text-white hover:bg-slate-800 transition"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white shadow-md shadow-indigo-600/30 transition flex items-center gap-1.5"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Crear Libro Diario</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: EDITAR LIBRO DIARIO */}
+      {editingBook && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in duration-150">
+          <div className="w-full max-w-md rounded-2xl bg-slate-900 border border-slate-800 p-6 shadow-2xl space-y-4 animate-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-indigo-600/20 border border-indigo-500/30 text-indigo-400 flex items-center justify-center">
+                  <Edit2 className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white">Editar Libro Diario</h3>
+                  <p className="text-[11px] text-slate-400">Modifica los datos identificatorios de este ejercicio</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingBook(null)}
+                className="text-slate-500 hover:text-white p-1 rounded-lg transition"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleConfirmEditBook} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                  Nombre del libro <span className="text-indigo-400">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  autoFocus
+                  value={editBookName}
+                  onChange={(e) => setEditBookName(e.target.value)}
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 focus:outline-none focus:border-indigo-500 text-xs text-white"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                  Descripción o consignas del ejercicio <span className="text-slate-500 font-normal">(opcional)</span>
+                </label>
+                <textarea
+                  rows={2}
+                  value={editBookDesc}
+                  onChange={(e) => setEditBookDesc(e.target.value)}
+                  className="w-full px-3.5 py-2 rounded-xl bg-slate-950 border border-slate-800 focus:outline-none focus:border-indigo-500 text-xs text-white resize-y"
+                />
+              </div>
+
+              <div className="flex items-center justify-between px-3.5 py-2.5 rounded-xl bg-slate-950/80 border border-slate-800 text-xs">
+                <span className="text-slate-400">Asientos en este libro:</span>
+                <span className="font-mono text-indigo-300 font-bold">
+                  {editingBook.entries?.length || 0} asientos
+                </span>
+              </div>
+
+              <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setEditingBook(null)}
+                  className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-400 hover:text-white hover:bg-slate-800 transition"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white shadow-md shadow-indigo-600/30 transition flex items-center gap-1.5"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  <span>Guardar Cambios</span>
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
 

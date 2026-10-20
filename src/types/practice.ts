@@ -108,8 +108,18 @@ export interface ManualJournalRow {
   credit: number;
 }
 
+export interface JournalBook {
+  id: string;
+  name: string;
+  description?: string;
+  createdAt: string; // Fecha de creación (ISO o legible)
+  entries: ManualJournalEntry[]; // Asientos pertenecientes exclusivamente a este libro
+}
+
 export interface PracticeData {
-  journalEntries: ManualJournalEntry[];
+  journalBooks?: JournalBook[]; // Colección de libros diarios independientes
+  activeJournalBookId?: string; // ID del libro diario activo seleccionado
+  journalEntries: ManualJournalEntry[]; // Espejo/compatibilidad hacia atrás con el libro activo
   journalRows?: ManualJournalRow[]; // Compatibilidad hacia atrás
   tAccounts: TAccount[];
   inventorySheets: FacultyInventorySheet[];
