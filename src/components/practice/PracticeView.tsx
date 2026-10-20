@@ -730,9 +730,29 @@ export const PracticeView: React.FC = () => {
       journalEntries: (prev.journalEntries || []).map(entry => {
         if (entry.id !== entryId) return entry;
         const newStatus = entry.reviewStatus === status ? null : status;
+        let correctionLines = entry.correctionLines;
+        if (newStatus === 'INCORRECT' && (!correctionLines || correctionLines.length === 0)) {
+          correctionLines = [
+            {
+              id: generateId('pj_corr_line'),
+              accountName: '',
+              detail: '',
+              debit: 0,
+              credit: 0
+            },
+            {
+              id: generateId('pj_corr_line'),
+              accountName: '',
+              detail: '',
+              debit: 0,
+              credit: 0
+            }
+          ];
+        }
         return {
           ...entry,
-          reviewStatus: newStatus
+          reviewStatus: newStatus,
+          correctionLines
         };
       })
     }));
@@ -747,6 +767,83 @@ export const PracticeView: React.FC = () => {
         return {
           ...entry,
           reviewNotes: notes
+        };
+      })
+    }));
+  };
+
+  // Agregar una línea al asiento en blanco de corrección
+  const handleAddCorrectionLine = (entryId: string) => {
+    setPracticeData(prev => ({
+      ...prev,
+      journalEntries: (prev.journalEntries || []).map(entry => {
+        if (entry.id !== entryId) return entry;
+        const currentLines = (entry.correctionLines && entry.correctionLines.length > 0)
+          ? entry.correctionLines
+          : [
+              { id: generateId('pj_corr_line'), accountName: '', detail: '', debit: 0, credit: 0 },
+              { id: generateId('pj_corr_line'), accountName: '', detail: '', debit: 0, credit: 0 },
+            ];
+        const newLine: ManualJournalLine = {
+          id: generateId('pj_corr_line'),
+          accountName: '',
+          detail: '',
+          debit: 0,
+          credit: 0
+        };
+        return {
+          ...entry,
+          correctionLines: [...currentLines, newLine]
+        };
+      })
+    }));
+  };
+
+  // Modificar un campo de una línea del asiento de corrección
+  const handleUpdateCorrectionLine = (entryId: string, lineId: string, field: keyof ManualJournalLine, value: any) => {
+    setPracticeData(prev => ({
+      ...prev,
+      journalEntries: (prev.journalEntries || []).map(entry => {
+        if (entry.id !== entryId) return entry;
+        const currentLines = (entry.correctionLines && entry.correctionLines.length > 0)
+          ? entry.correctionLines
+          : [
+              { id: `${entry.id}_corr_1`, accountName: '', detail: '', debit: 0, credit: 0 },
+              { id: `${entry.id}_corr_2`, accountName: '', detail: '', debit: 0, credit: 0 },
+            ];
+
+        return {
+          ...entry,
+          correctionLines: currentLines.map(line => {
+            if (line.id !== lineId) return line;
+            let parsedVal = value;
+            if (field === 'debit' || field === 'credit') {
+              if (value === '' || value === null || value === undefined) {
+                parsedVal = 0;
+              } else {
+                const clean = String(value).replace(',', '.');
+                parsedVal = isNaN(Number(clean)) ? 0 : Number(clean);
+              }
+            }
+            return {
+              ...line,
+              [field]: parsedVal
+            };
+          })
+        };
+      })
+    }));
+  };
+
+  // Eliminar una línea del asiento de corrección
+  const handleDeleteCorrectionLine = (entryId: string, lineId: string) => {
+    setPracticeData(prev => ({
+      ...prev,
+      journalEntries: (prev.journalEntries || []).map(entry => {
+        if (entry.id !== entryId) return entry;
+        return {
+          ...entry,
+          correctionLines: (entry.correctionLines || []).filter(line => line.id !== lineId)
         };
       })
     }));
@@ -2291,32 +2388,232 @@ export const PracticeView: React.FC = () => {
                       </div>
                     </div>
 
-                    {/* Sección de anotaciones de corrección cuando el asiento se marca como incorrecto */}
-                    {entry.reviewStatus === 'INCORRECT' && (
-                      <div className="px-4 py-3 bg-rose-950/20 border-t border-rose-900/40 no-print animate-in fade-in slide-in-from-top-1 duration-200">
-                        <div className="flex items-center justify-between gap-2 mb-1.5">
-                          <div className="flex items-center gap-1.5 text-rose-300 text-xs font-semibold">
-                            <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
-                            <span>Anotaciones de corrección (¿Por qué lo hice mal?):</span>
-                          </div>
-                          <span className="text-[10px] text-rose-400/80 font-mono">
-                            Auto-guardado con el asiento
-                          </span>
-                        </div>
-                        <textarea
-                          value={entry.reviewNotes || ''}
-                          onChange={(e) => handleUpdateEntryReviewNotes(entry.id, e.target.value)}
-                          placeholder="Escribe aquí las anotaciones de por qué estuvo mal (ej. 'Confundí Compras con Mercaderías', 'Olvidé registrar la bonificación del 25/10', 'Invertí las cuentas en el Debe/Haber')..."
-                          rows={2}
-                          className="w-full px-3 py-2 text-xs text-rose-100 placeholder-rose-400/50 bg-slate-950/90 border border-rose-900/50 rounded-xl focus:outline-none focus:border-rose-400 font-sans resize-y"
-                        />
-                      </div>
-                    )}
+                    {/* Sección de corrección cuando el asiento se marca como incorrecto */}
+                    {entry.reviewStatus === 'INCORRECT' && (() => {
+                      const corrLines = (entry.correctionLines && entry.correctionLines.length > 0)
+                        ? entry.correctionLines
+                        : [
+                            { id: `${entry.id}_corr_1`, accountName: '', detail: '', debit: 0, credit: 0 },
+                            { id: `${entry.id}_corr_2`, accountName: '', detail: '', debit: 0, credit: 0 },
+                          ];
+                      const corrDebit = round2(corrLines.reduce((s, l) => s + (Number(l.debit) || 0), 0));
+                      const corrCredit = round2(corrLines.reduce((s, l) => s + (Number(l.credit) || 0), 0));
+                      const corrDiff = round2(Math.abs(corrDebit - corrCredit));
+                      const isCorrBalanced = corrDiff === 0 && (corrDebit > 0 || corrCredit > 0);
 
-                    {/* En impresión formal PDF: mostrar anotación de corrección si existe */}
-                    {entry.reviewStatus === 'INCORRECT' && entry.reviewNotes && (
-                      <div className="hidden print:block px-4 py-2 bg-slate-50 border-t border-black text-xs text-slate-800">
-                        <strong>Nota de corrección del asiento:</strong> {entry.reviewNotes}
+                      return (
+                        <div className="px-4 py-4 bg-rose-950/20 border-t border-rose-900/40 no-print animate-in fade-in slide-in-from-top-1 duration-200 space-y-4">
+                          {/* 1. Anotaciones de corrección */}
+                          <div>
+                            <div className="flex items-center justify-between gap-2 mb-1.5">
+                              <div className="flex items-center gap-1.5 text-rose-300 text-xs font-semibold">
+                                <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                                <span>Anotaciones de corrección (¿Por qué lo hice mal?):</span>
+                              </div>
+                              <span className="text-[10px] text-rose-400/80 font-mono">
+                                Auto-guardado con el asiento
+                              </span>
+                            </div>
+                            <textarea
+                              value={entry.reviewNotes || ''}
+                              onChange={(e) => handleUpdateEntryReviewNotes(entry.id, e.target.value)}
+                              placeholder="Escribe aquí las anotaciones de por qué estuvo mal (ej. 'Confundí Compras con Mercaderías', 'Olvidé registrar la bonificación del 25/10', 'Invertí las cuentas en el Debe/Haber')..."
+                              rows={2}
+                              className="w-full px-3 py-2 text-xs text-rose-100 placeholder-rose-400/50 bg-slate-950/90 border border-rose-900/50 rounded-xl focus:outline-none focus:border-rose-400 font-sans resize-y"
+                            />
+                          </div>
+
+                          {/* 2. Asiento en blanco para registrar la versión correcta */}
+                          <div className="rounded-xl border border-emerald-500/40 bg-slate-950/90 shadow-md overflow-hidden">
+                            {/* Cabecera del Asiento Corregido */}
+                            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-3.5 py-2.5 bg-emerald-950/40 border-b border-emerald-800/40">
+                              <div className="flex items-center gap-2">
+                                <span className="w-6 h-6 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 flex items-center justify-center font-bold text-xs">
+                                  ✓
+                                </span>
+                                <div>
+                                  <span className="text-xs font-bold text-emerald-300">Asiento Corregido (Versión Correcta)</span>
+                                  <span className="text-[11px] text-slate-400 ml-2 hidden sm:inline font-sans">
+                                    Carga aquí el asiento con las cuentas y montos adecuados
+                                  </span>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-2">
+                                <div className={`text-[11px] font-bold px-2 py-0.5 rounded-lg flex items-center gap-1 border ${
+                                  isCorrBalanced 
+                                    ? 'bg-emerald-950/60 text-emerald-300 border-emerald-800/50' 
+                                    : 'bg-amber-950/60 text-amber-300 border-amber-800/50'
+                                }`}>
+                                  {isCorrBalanced ? (
+                                    <>
+                                      <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                                      <span>Cuadrado ({formatCurrency(corrDebit)})</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <AlertTriangle className="w-3 h-3 text-amber-400" />
+                                      <span>Descuadre: {formatCurrency(corrDiff)}</span>
+                                    </>
+                                  )}
+                                </div>
+
+                                <button
+                                  type="button"
+                                  onClick={() => handleAddCorrectionLine(entry.id)}
+                                  className="flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-600/30 hover:bg-emerald-600 text-emerald-200 hover:text-white text-xs font-semibold border border-emerald-500/40 transition shadow-sm"
+                                  title="Agregar cuenta al asiento corregido"
+                                >
+                                  <Plus className="w-3 h-3" />
+                                  <span>+ Línea</span>
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* Tabla del Asiento Corregido */}
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-left text-xs border-collapse">
+                                <thead>
+                                  <tr className="bg-slate-950 text-slate-400 uppercase font-mono text-[10px] border-b border-slate-800">
+                                    <th className="py-2 px-3 min-w-[200px] font-sans">Cuenta Contable (Correcta)</th>
+                                    <th className="py-2 px-3 min-w-[220px] font-sans">Detalle / Glosa</th>
+                                    <th className="py-2 px-3 w-32 text-right">Debe ($)</th>
+                                    <th className="py-2 px-3 w-32 text-right">Haber ($)</th>
+                                    <th className="py-2 px-2 w-8 text-center print:hidden">Acción</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-800/60 font-mono text-slate-200">
+                                  {corrLines.map((corrLine) => (
+                                    <tr key={corrLine.id} className="hover:bg-slate-800/30 transition">
+                                      {/* Cuenta */}
+                                      <td className="py-1.5 px-3 font-sans">
+                                        <input
+                                          type="text"
+                                          placeholder="Cuenta correcta (ej. Compras, Proveedores)..."
+                                          value={corrLine.accountName}
+                                          onChange={(e) => handleUpdateCorrectionLine(entry.id, corrLine.id, 'accountName', e.target.value)}
+                                          className="w-full px-2.5 py-1 text-emerald-200 font-semibold rounded bg-slate-900 border border-slate-800 focus:outline-none focus:border-emerald-500 text-xs"
+                                        />
+                                      </td>
+
+                                      {/* Detalle */}
+                                      <td className="py-1.5 px-3 font-sans">
+                                        <input
+                                          type="text"
+                                          placeholder="Detalle o glosa..."
+                                          value={corrLine.detail}
+                                          onChange={(e) => handleUpdateCorrectionLine(entry.id, corrLine.id, 'detail', e.target.value)}
+                                          className="w-full px-2.5 py-1 text-slate-300 rounded bg-slate-900 border border-slate-800 focus:outline-none focus:border-emerald-500 text-xs"
+                                        />
+                                      </td>
+
+                                      {/* Debe */}
+                                      <td className="py-1.5 px-3 text-right">
+                                        <input
+                                          type="number"
+                                          min="0"
+                                          step="any"
+                                          value={corrLine.debit || ''}
+                                          onChange={(e) => handleUpdateCorrectionLine(entry.id, corrLine.id, 'debit', e.target.value)}
+                                          placeholder="0.00"
+                                          className="w-full px-2 py-1 text-right font-bold text-blue-300 rounded bg-slate-900 border border-slate-800 focus:outline-none focus:border-blue-500 text-xs"
+                                        />
+                                      </td>
+
+                                      {/* Haber */}
+                                      <td className="py-1.5 px-3 text-right">
+                                        <input
+                                          type="number"
+                                          min="0"
+                                          step="any"
+                                          value={corrLine.credit || ''}
+                                          onChange={(e) => handleUpdateCorrectionLine(entry.id, corrLine.id, 'credit', e.target.value)}
+                                          placeholder="0.00"
+                                          className="w-full px-2 py-1 text-right font-bold text-emerald-300 rounded bg-slate-900 border border-slate-800 focus:outline-none focus:border-emerald-500 text-xs"
+                                        />
+                                      </td>
+
+                                      {/* Acción */}
+                                      <td className="py-1.5 px-2 text-center print:hidden">
+                                        <button
+                                          type="button"
+                                          onClick={() => handleDeleteCorrectionLine(entry.id, corrLine.id)}
+                                          className="p-1 rounded text-slate-500 hover:text-rose-400 transition"
+                                          title="Eliminar partida corregida"
+                                        >
+                                          <Trash2 className="w-3.5 h-3.5" />
+                                        </button>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                                {/* Subtotales del asiento corregido */}
+                                <tfoot className="bg-slate-950/80 font-mono text-xs border-t border-slate-800">
+                                  <tr>
+                                    <td colSpan={2} className="py-2 px-3 font-sans text-right text-emerald-400 font-semibold text-[11px]">
+                                      Totales Asiento Corregido:
+                                    </td>
+                                    <td className="py-2 px-3 text-right font-bold text-blue-300 font-mono">
+                                      {formatCurrency(corrDebit)}
+                                    </td>
+                                    <td className="py-2 px-3 text-right font-bold text-emerald-300 font-mono">
+                                      {formatCurrency(corrCredit)}
+                                    </td>
+                                    <td></td>
+                                  </tr>
+                                </tfoot>
+                              </table>
+                            </div>
+
+                            {/* Barra inferior del asiento corregido */}
+                            <div className="px-3.5 py-2 bg-slate-950/40 border-t border-slate-800/60 flex justify-end no-print">
+                              <button
+                                type="button"
+                                onClick={() => handleAddCorrectionLine(entry.id)}
+                                className="text-xs text-emerald-400 hover:text-emerald-300 font-semibold inline-flex items-center gap-1 transition"
+                              >
+                                <Plus className="w-3.5 h-3.5" />
+                                <span>+ Agregar otra cuenta a este asiento corregido</span>
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {/* En impresión formal PDF: mostrar anotación de corrección y asiento corregido si existen */}
+                    {entry.reviewStatus === 'INCORRECT' && (
+                      <div className="hidden print:block px-4 py-3 bg-slate-50 border-t border-black text-xs text-slate-800 space-y-2">
+                        {entry.reviewNotes && (
+                          <div>
+                            <strong>Anotación de corrección:</strong> {entry.reviewNotes}
+                          </div>
+                        )}
+                        {entry.correctionLines && entry.correctionLines.length > 0 && entry.correctionLines.some(l => l.accountName || l.debit > 0 || l.credit > 0) && (
+                          <div>
+                            <div className="font-bold uppercase text-[11px] mb-1 text-black">Asiento Corregido (Versión Correcta):</div>
+                            <table className="w-full text-left text-xs border border-black border-collapse">
+                              <thead>
+                                <tr className="bg-slate-200 border-b border-black text-[10px] uppercase">
+                                  <th className="py-1 px-2 border-r border-black">Cuenta Contable</th>
+                                  <th className="py-1 px-2 border-r border-black">Detalle</th>
+                                  <th className="py-1 px-2 w-28 text-right border-r border-black">Debe ($)</th>
+                                  <th className="py-1 px-2 w-28 text-right">Haber ($)</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-black/30 font-mono">
+                                {entry.correctionLines.map(l => (
+                                  <tr key={l.id}>
+                                    <td className="py-1 px-2 font-bold font-sans border-r border-black">{l.accountName || '—'}</td>
+                                    <td className="py-1 px-2 italic font-sans border-r border-black">{l.detail || '—'}</td>
+                                    <td className="py-1 px-2 text-right border-r border-black">{l.debit > 0 ? formatCurrency(l.debit) : '—'}</td>
+                                    <td className="py-1 px-2 text-right">{l.credit > 0 ? formatCurrency(l.credit) : '—'}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>

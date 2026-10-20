@@ -94,6 +94,7 @@ export interface ManualJournalEntry {
   lines: ManualJournalLine[];
   reviewStatus?: 'CORRECT' | 'INCORRECT' | null; // Tilde verde (CORRECT) o tilde roja (INCORRECT)
   reviewNotes?: string; // Anotaciones de por qué se hizo mal / correcciones
+  correctionLines?: ManualJournalLine[]; // Asiento en blanco para cargar la versión correcta
 }
 
 export interface ManualJournalRow {
